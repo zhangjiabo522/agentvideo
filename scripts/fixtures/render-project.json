@@ -1,0 +1,34 @@
+{
+  "id": "render-fixture",
+  "name": "渲染验证",
+  "width": 640,
+  "height": 360,
+  "fps": 10,
+  "revision": 1,
+  "updatedAt": "2026-10-09T00:00:00Z",
+  "scenes": [
+    {
+      "id": "scene-a",
+      "name": "图文动画",
+      "duration": 15,
+      "background": "#162422",
+      "notes": "",
+      "nodes": [
+        {"id":"image-a","type":"image","name":"风景","x":320,"y":30,"width":280,"height":280,"rotation":0,"opacity":1,"color":"#ffffff","src":"/media/landscape.jpg","start":0,"end":15,"animation":"zoom","locked":false,"hidden":false},
+        {"id":"text-a","type":"text","name":"标题","x":30,"y":50,"width":270,"height":100,"rotation":0,"opacity":1,"color":"#ffffff","text":"用文字，\n让想法动起来","fontSize":36,"fontWeight":600,"start":0,"end":15,"animation":"slide","locked":false,"hidden":false},
+        {"id":"circle-a","type":"circle","name":"圆形","x":30,"y":240,"width":70,"height":70,"rotation":0,"opacity":0.9,"color":"#f3c96a","start":3,"end":15,"animation":"fade","locked":false,"hidden":false}
+      ]
+    },
+    {
+      "id": "scene-b",
+      "name": "数据动画",
+      "duration": 15,
+      "background": "#faf8f5",
+      "notes": "",
+      "nodes": [
+        {"id":"chart-b","type":"chart","name":"图表","x":70,"y":50,"width":500,"height":260,"rotation":0,"opacity":1,"color":"#2e6656","data":[20,45,32,60],"labels":["第一季度","第二季度","第三季度","第四季度"],"start":0,"end":15,"animation":"fade","locked":false,"hidden":false}
+      ]
+    }
+  ],
+  "audio": [{"id":"audio-a","name":"测试音轨","src":"/uploads/render-test.wav","start":5,"trimStart":2,"duration":20,"volume":0.25}]
+}

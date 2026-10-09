@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,5 +168,19 @@ func atomicJSON(path string, value any) error {
 }
 
 func endpoint(base, path string) string {
-	return strings.TrimRight(strings.TrimSpace(base), "/") + "/" + path
+	return normalizeProviderBaseURL(base) + "/" + path
+}
+
+func normalizeProviderBaseURL(base string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.RawPath != "" {
+		return base
+	}
+	separator := strings.LastIndex(parsed.Path, "/")
+	if separator >= 0 && strings.EqualFold(parsed.Path[separator+1:], "v1") {
+		parsed.Path = parsed.Path[:separator+1] + "v1"
+		return parsed.String()
+	}
+	return base
 }

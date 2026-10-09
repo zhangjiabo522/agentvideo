@@ -163,12 +163,6 @@ func preserveKeys(settings, previous Settings) Settings {
 	settings.APIKey = strings.TrimSpace(settings.APIKey)
 	settings.ImageAPIKey = strings.TrimSpace(settings.ImageAPIKey)
 	settings.TTSAPIKey = strings.TrimSpace(settings.TTSAPIKey)
-	settings.BaseURL = strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/")
-	settings.ImageBaseURL = strings.TrimRight(strings.TrimSpace(settings.ImageBaseURL), "/")
-	settings.TTSBaseURL = strings.TrimRight(strings.TrimSpace(settings.TTSBaseURL), "/")
-	previous.BaseURL = strings.TrimRight(strings.TrimSpace(previous.BaseURL), "/")
-	previous.ImageBaseURL = strings.TrimRight(strings.TrimSpace(previous.ImageBaseURL), "/")
-	previous.TTSBaseURL = strings.TrimRight(strings.TrimSpace(previous.TTSBaseURL), "/")
 	if strings.TrimSpace(settings.APIKey) == "" && settings.BaseURL == previous.BaseURL {
 		settings.APIKey = previous.APIKey
 	}
@@ -189,6 +183,9 @@ func preserveKeys(settings, previous Settings) Settings {
 }
 
 func settingsDefaults(settings Settings) Settings {
+	settings.BaseURL = normalizeProviderBaseURL(settings.BaseURL)
+	settings.ImageBaseURL = normalizeProviderBaseURL(settings.ImageBaseURL)
+	settings.TTSBaseURL = normalizeProviderBaseURL(settings.TTSBaseURL)
 	if settings.TTSProvider == "" {
 		settings.TTSProvider = "local"
 	}
@@ -292,6 +289,7 @@ func (s *Server) providerJSON(ctx context.Context, target, apiKey string, payloa
 		return errors.New("无法创建模型请求")
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
 	if apiKey != "" {
 		request.Header.Set("Authorization", "Bearer "+apiKey)
 		if strings.EqualFold(request.URL.Hostname(), "api.xiaomimimo.com") {
@@ -329,8 +327,23 @@ func (s *Server) providerJSON(ctx context.Context, target, apiKey string, payloa
 		}
 		return fmt.Errorf("服务返回 HTTP %d%s", response.StatusCode, message)
 	}
+	body = bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(body), []byte{0xef, 0xbb, 0xbf}))
+	if len(body) == 0 {
+		return errors.New("模型服务返回空响应，请重试或检查服务状态")
+	}
+	if !json.Valid(body) {
+		contentType := strings.ToLower(response.Header.Get("Content-Type"))
+		prefix := strings.ToLower(string(body[:min(len(body), 256)]))
+		if strings.Contains(contentType, "text/html") || strings.HasPrefix(prefix, "<!doctype html") || strings.HasPrefix(prefix, "<html") {
+			return errors.New("模型服务返回了网页，请检查服务地址与接口路径，OpenAI 兼容接口通常使用小写 /v1")
+		}
+		if strings.Contains(contentType, "text/event-stream") || strings.HasPrefix(prefix, "data:") {
+			return errors.New("模型服务返回了流式响应，当前接口需要非流式 JSON，请检查服务设置")
+		}
+		return errors.New("模型服务返回的内容不是有效 JSON，请检查服务地址、接口路径与服务状态")
+	}
 	if err := json.Unmarshal(body, output); err != nil {
-		return errors.New("模型服务返回格式不兼容，预期 JSON 响应")
+		return errors.New("模型服务返回的 JSON 结构不兼容，请检查模型名称与接口类型")
 	}
 	return nil
 }

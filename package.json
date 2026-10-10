@@ -8,7 +8,8 @@
     "start": "node scripts/start.mjs",
     "setup:tts": "node scripts/setup-local-tts.mjs",
     "build": "tsc -b && vite build",
-    "test:browser": "node scripts/verify.mjs"
+    "test:browser": "node scripts/verify.mjs",
+    "test:export": "node scripts/verify-export.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

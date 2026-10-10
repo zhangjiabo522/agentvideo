@@ -1480,6 +1480,44 @@ button .spin {
 .export-progress {
   margin-top: 20px;
 }
+.export-status {
+  padding: 0;
+  color: inherit;
+}
+.export-status strong {
+  flex: 1;
+  min-width: 0;
+}
+.export-status > span,
+.export-metrics dd {
+  font-variant-numeric: tabular-nums;
+}
+.export-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+  font-size: 12px;
+}
+.export-metrics dt {
+  color: color-mix(in srgb, currentColor 75%, var(--surface));
+  margin-bottom: 6px;
+}
+.export-metrics dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.export-connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.export-connection > span {
+  flex: 1 1 200px;
+  overflow-wrap: anywhere;
+}
 .progress-track {
   height: 7px;
   background: #e8efe9;

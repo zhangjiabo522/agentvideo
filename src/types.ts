@@ -75,10 +75,21 @@ export type Settings = {
 };
 export type ExportJob = {
   id: string;
+  projectId?: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   progress: number;
   message: string;
   url?: string;
+  stage?: string;
+  renderedFrames?: number;
+  totalFrames?: number;
+  elapsedSeconds?: number;
+  estimatedRemainingSeconds?: number;
+  queuePosition?: number;
+  createdAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  updatedAt?: string;
 };
 export const uid = () => crypto.randomUUID();
 export const totalFrames = (project: Project) =>

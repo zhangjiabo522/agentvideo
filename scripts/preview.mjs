@@ -1,5 +1,6 @@
-import {access, readFile} from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
 import {chromium} from 'playwright';
+import {chromiumPath} from './chromium.mjs';
 
 const [projectPath, outputPath, origin, frameValue] = process.argv.slice(2);
 let browser;
@@ -12,10 +13,7 @@ async function preview() {
   const frame = Number(frameValue);
   const total = project.scenes.reduce((sum, scene) => sum + scene.duration, 0);
   if (!Number.isInteger(frame) || frame < 0 || frame >= total) throw new Error('截图帧超出工程范围');
-  const configuredPath = process.env.CHROME_PATH || '/home/icy/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome';
-  let executablePath;
-  try {await access(configuredPath); executablePath = configuredPath;} catch {executablePath = undefined;}
-  browser = await chromium.launch({headless: true, executablePath, args: ['--no-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none']});
+  browser = await chromium.launch({headless: true, executablePath: await chromiumPath(), args: ['--no-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none']});
   const page = await browser.newPage({viewport: {width: project.width, height: project.height}, deviceScaleFactor: 1, reducedMotion: 'reduce'});
   page.setDefaultTimeout(20000);
   await page.goto(new URL('/render.html', target).href, {waitUntil: 'networkidle'});

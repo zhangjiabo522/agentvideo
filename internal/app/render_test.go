@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -145,4 +147,205 @@ func TestExportValidationAndOrigin(t *testing.T) {
 	if _, err := renderOrigin(request); err == nil {
 		t.Fatal("任意 Host 可改变渲染地址")
 	}
+}
+
+func TestExportQueuedCancellationReleasesCapacity(t *testing.T) {
+	m := testExportManager(t)
+	jobs := make([]ExportJob, 0, 3)
+	for index := 0; index < 3; index++ {
+		job, err := m.create(renderProject(), "http://127.0.0.1:8080")
+		if err != nil {
+			t.Fatal(err)
+		}
+		jobs = append(jobs, job)
+		if job.QueuePosition != index+1 || job.Stage != "queued" || job.TotalFrames != 10 {
+			t.Fatalf("排队信息不正确: %+v", job)
+		}
+	}
+	cancelled, _ := m.cancel(jobs[1].ID)
+	if cancelled.Stage != "cancelled" || cancelled.FinishedAt == "" || len(m.queue) != 2 {
+		t.Fatalf("取消排队任务未及时回收: %+v，队列=%d", cancelled, len(m.queue))
+	}
+	if _, err := os.Stat(m.jobs[jobs[1].ID].inputPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("取消排队任务未清理快照: %v", err)
+	}
+	last, _ := m.get(jobs[2].ID)
+	if last.QueuePosition != 2 {
+		t.Fatalf("取消后排队位置未更新: %+v", last)
+	}
+	if _, err := m.create(renderProject(), "http://127.0.0.1:8080"); err != nil {
+		t.Fatalf("取消排队任务后仍无法提交: %v", err)
+	}
+	for _, job := range m.list("") {
+		m.cancel(job.ID)
+	}
+}
+
+func TestExportProgressAndProjectHistory(t *testing.T) {
+	m := testExportManager(t)
+	first, err := m.create(renderProject(), "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := renderProject()
+	project.ID = "another-project"
+	other, err := m.create(project, "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := m.create(renderProject(), "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := m.list("render-project")
+	if len(history) != 2 || history[0].ID != latest.ID || history[1].ID != first.ID {
+		t.Fatalf("按工程查询最近导出不正确: %+v", history)
+	}
+	task := m.jobs[first.ID]
+	m.update(task, "running", 0.01, "准备")
+	m.updateProgress(task, "running", renderProgress{Stage: "rendering", Progress: 0.4, RenderedFrames: 4, Message: "渲染中"})
+	m.mu.Lock()
+	task.renderingStartedAt = time.Now().Add(-4 * time.Second)
+	task.job.StartedAt = task.renderingStartedAt.UTC().Format(time.RFC3339Nano)
+	lastProgress := task.lastProgressAt
+	m.mu.Unlock()
+	m.updateProgress(task, "running", renderProgress{Stage: "rendering", Progress: 0.3, RenderedFrames: 4, Message: "渲染中"})
+	job, _ := m.get(first.ID)
+	if job.Progress != 0.4 || job.RenderedFrames != 4 || job.TotalFrames != 10 || job.StartedAt == "" || job.QueuePosition != 0 || job.ElapsedSeconds < 4 || job.EstimatedRemainingSeconds == nil || *job.EstimatedRemainingSeconds < 6 {
+		t.Fatalf("渲染状态不正确: %+v", job)
+	}
+	m.mu.Lock()
+	if !task.lastProgressAt.Equal(lastProgress) {
+		t.Fatal("无进展心跳重置了卡住检测")
+	}
+	m.mu.Unlock()
+	m.update(task, "completed", 1, "完成")
+	completed, _ := m.get(first.ID)
+	if completed.FinishedAt == "" || completed.Stage != "completed" || completed.EstimatedRemainingSeconds != nil || completed.RenderedFrames != 10 {
+		t.Fatalf("完成状态不正确: %+v", completed)
+	}
+	m.cancel(other.ID)
+	m.cancel(latest.ID)
+	defer task.cancel()
+}
+
+func TestExportOrderingWithVariablePrecisionTimestamps(t *testing.T) {
+	m := testExportManager(t)
+	createdAt := []string{"2026-10-10T01:00:00.1Z", "2026-10-10T01:00:00.11Z", "2026-10-10T01:00:00.09Z"}
+	jobs := make([]ExportJob, 0, len(createdAt))
+	for _, timestamp := range createdAt {
+		job, err := m.create(renderProject(), "http://127.0.0.1:8080")
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.jobs[job.ID].job.CreatedAt = timestamp
+		jobs = append(jobs, job)
+	}
+	history := m.list("render-project")
+	if len(history) != 3 || history[0].ID != jobs[1].ID || history[1].ID != jobs[0].ID || history[2].ID != jobs[2].ID {
+		t.Fatalf("不同小数精度的时间导致导出历史错序: %+v", history)
+	}
+	for index, expected := range []int{2, 3, 1} {
+		job, _ := m.get(jobs[index].ID)
+		if job.QueuePosition != expected {
+			t.Fatalf("不同小数精度的时间导致排队位置错序: %+v，预期=%d", job, expected)
+		}
+	}
+	for _, job := range jobs {
+		m.cancel(job.ID)
+	}
+}
+
+func TestExportWorkerSurvivesRendererPanic(t *testing.T) {
+	m := testExportManager(t)
+	first, err := m.create(renderProject(), "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.create(renderProject(), "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.runTask = func(task *renderTask) error {
+		if task.job.ID == first.ID {
+			panic("renderer failure")
+		}
+		return nil
+	}
+	close(m.queue)
+	finished := make(chan struct{})
+	go func() { m.work(); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("渲染器异常后队列卡住")
+	}
+	failed, _ := m.get(first.ID)
+	completed, _ := m.get(second.ID)
+	if failed.Status != "failed" || failed.FinishedAt == "" || completed.Status != "completed" {
+		t.Fatalf("渲染器异常后队列状态不正确: %+v %+v", failed, completed)
+	}
+}
+
+func TestExportHeartbeatCannotMaskStall(t *testing.T) {
+	m := testExportManager(t)
+	m.stallTimeout = 60 * time.Millisecond
+	job, err := m.create(renderProject(), "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := m.jobs[job.ID]
+	m.updateProgress(task, "running", renderProgress{Stage: "rendering", Progress: 0.2, RenderedFrames: 2, Message: "渲染中"})
+	ctx, cancel := context.WithCancel(task.ctx)
+	defer cancel()
+	defer task.cancel()
+	done := make(chan struct{})
+	defer close(done)
+	stalled := make(chan struct{}, 1)
+	go m.monitorProgress(task, ctx, cancel, done, stalled)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			select {
+			case <-stalled:
+				return
+			default:
+				t.Fatal("任务取消未记录卡住原因")
+			}
+		case <-ticker.C:
+			m.updateProgress(task, "running", renderProgress{Stage: "rendering", Progress: 0.2, RenderedFrames: 2, Message: "渲染中"})
+		case <-deadline.C:
+			t.Fatal("无进展心跳导致卡住任务始终不停止")
+		}
+	}
+}
+
+func TestExportRenderStallStopsProcess(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("未安装 Node.js")
+	}
+	m := testExportManager(t)
+	m.stallTimeout = 250 * time.Millisecond
+	m.renderTimeout = 2 * time.Second
+	m.script = filepath.Join(t.TempDir(), "stalled.mjs")
+	script := "setInterval(() => process.stdout.write(JSON.stringify({stage: 'rendering', progress: 0.2, renderedFrames: 2, totalFrames: 10, message: '渲染中'}) + '\\n'), 10);"
+	if err := os.WriteFile(m.script, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	job, err := m.create(renderProject(), "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := m.jobs[job.ID]
+	m.update(task, "running", 0.01, "准备")
+	started := time.Now()
+	err = m.render(task)
+	if err == nil || !strings.Contains(err.Error(), "没有进展") || time.Since(started) > time.Second {
+		t.Fatalf("卡住的渲染进程未及时停止: %v，耗时=%s", err, time.Since(started))
+	}
+	m.cancel(job.ID)
 }

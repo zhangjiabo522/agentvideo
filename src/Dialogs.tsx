@@ -236,48 +236,132 @@ export function NewProjectModal({onClose, onCreate}: {onClose: () => void; onCre
 }
 
 const jobLabels: Record<ExportJob['status'], string> = {queued: '等待渲染', running: '正在渲染', completed: '视频已就绪', failed: '导出失败', cancelled: '已取消导出'};
+export const exportStages: Record<string, string> = {queued: '等待渲染', preparing: '准备画面和素材', rendering: '正在渲染画面', encoding: '正在编码视频', audio: '正在合成配音', completed: '视频已就绪', failed: '导出失败', cancelled: '已取消导出'};
+
+export async function exportRequest<T>(url: string, options: RequestInit = {}, timeout = 15000): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  options.signal?.addEventListener('abort', abort, {once: true});
+  if (options.signal?.aborted) controller.abort();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {timedOut = true; controller.abort();}, timeout);
+  try {
+    return await request<T>(url, {...options, signal: controller.signal});
+  } catch (cause) {
+    if (timedOut && !options.signal?.aborted) throw new Error('连接超时，正在重新获取导出状态。');
+    throw cause;
+  } finally {
+    window.clearTimeout(timer);
+    options.signal?.removeEventListener('abort', abort);
+  }
+}
+
+export function exportTime(seconds: number) {
+  const value = Math.max(0, Math.round(seconds));
+  if (value < 60) return `${value} 秒`;
+  return `${Math.floor(value / 60)} 分 ${value % 60} 秒`;
+}
 
 export function ExportModal({project, onClose}: {project: Project; onClose: () => void}) {
   const [format, setFormat] = useState<'video' | 'bundle' | 'json'>('video');
   const [job, setJob] = useState<ExportJob | null>(null);
+  const [restoring, setRestoring] = useState(true);
+  const [recoveryFailed, setRecoveryFailed] = useState(false);
+  const [restoreVersion, setRestoreVersion] = useState(0);
+  const [pollVersion, setPollVersion] = useState(0);
+  const [connectionError, setConnectionError] = useState('');
+  const [now, setNow] = useState(Date.now());
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [bundling, setBundling] = useState(false);
   const [error, setError] = useState('');
   const active = !!job && (job.status === 'queued' || job.status === 'running');
   useEffect(() => {
-    if (!job || (job.status !== 'queued' && job.status !== 'running')) return;
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  useEffect(() => {
     const controller = new AbortController();
-    let timer: number;
-    const poll = async () => {
+    setRestoring(true);
+    setRecoveryFailed(false);
+    setConnectionError('');
+    const restore = async () => {
       try {
-        const next = await request<ExportJob>(`/api/exports/${encodeURIComponent(job.id)}`, {signal: controller.signal});
-        if (!controller.signal.aborted) {setJob(next); setError(''); if (next.status === 'queued' || next.status === 'running') timer = window.setTimeout(poll, 1000);}
+        const jobs = await exportRequest<ExportJob[]>(`/api/exports?projectId=${encodeURIComponent(project.id)}`, {signal: controller.signal});
+        if (!Array.isArray(jobs)) throw new Error('无法读取导出任务，请重新连接。');
+        const matching = jobs.filter(item => item && item.projectId === project.id && item.id && jobLabels[item.status]);
+        const latest = matching.find(item => item.status === 'queued' || item.status === 'running') || matching[0] || null;
+        if (!controller.signal.aborted) {setNow(Date.now()); setJob(latest); setConnectionError('');}
       } catch (cause) {
-        if (!controller.signal.aborted) {setError(errorText(cause)); timer = window.setTimeout(poll, 1000);}
+        if (!controller.signal.aborted) {setConnectionError(errorText(cause)); setRecoveryFailed(true);}
+      } finally {
+        if (!controller.signal.aborted) setRestoring(false);
       }
     };
-    timer = window.setTimeout(poll, 1000);
+    void restore();
+    return () => controller.abort();
+  }, [project.id, restoreVersion]);
+  useEffect(() => {
+    if (!job || (job.status !== 'queued' && job.status !== 'running')) return;
+    const controller = new AbortController();
+    let timer = 0;
+    let failures = 0;
+    const poll = async () => {
+      try {
+        const next = await exportRequest<ExportJob>(`/api/exports/${encodeURIComponent(job.id)}`, {signal: controller.signal});
+        if (next.id !== job.id || next.projectId !== project.id || !jobLabels[next.status]) throw new Error('导出任务与当前工程不一致，请重新连接。');
+        if (!controller.signal.aborted) {
+          failures = 0;
+          setJob(next);
+          setConnectionError('');
+          if (next.status === 'queued' || next.status === 'running') timer = window.setTimeout(poll, 1000);
+        }
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          failures++;
+          const delay = Math.min(10000, 1000 * 2 ** Math.min(failures, 4));
+          setConnectionError(`${errorText(cause)} ${delay / 1000} 秒后重连。`);
+          timer = window.setTimeout(poll, delay);
+        }
+      }
+    };
+    void poll();
     return () => {controller.abort(); window.clearTimeout(timer);};
-  }, [job?.id, job?.status]);
+  }, [project.id, job?.id, job?.status, pollVersion]);
   const start = async () => {
+    if (starting || active || restoring || recoveryFailed) return;
     setStarting(true);
     setError('');
-    try {setJob(await request<ExportJob>('/api/exports', {method: 'POST', body: JSON.stringify({project})}));}
-    catch (cause) {setError(errorText(cause));}
+    setConnectionError('');
+    try {
+      const next = await exportRequest<ExportJob>('/api/exports', {method: 'POST', body: JSON.stringify({project})}, 30000);
+      if (!next.id || next.projectId !== project.id || !jobLabels[next.status]) throw new Error('无法读取新导出任务，正在重新连接。');
+      setNow(Date.now());
+      setJob(next);
+    }
+    catch (cause) {setError(errorText(cause)); setRestoreVersion(value => value + 1);}
     finally {setStarting(false);}
   };
   const cancel = async () => {
-    if (!job) return;
+    if (!job || cancelling) return;
     setCancelling(true);
     try {
-      const next = await request<ExportJob>(`/api/exports/${encodeURIComponent(job.id)}/cancel`, {method: 'POST'});
-      setJob(next.id ? next : {...job, status: 'cancelled', message: '已取消导出'});
+      const next = await exportRequest<ExportJob>(`/api/exports/${encodeURIComponent(job.id)}/cancel`, {method: 'POST'});
+      if (next.id !== job.id || next.projectId !== project.id || !jobLabels[next.status]) throw new Error('取消结果与当前导出不一致，请重新连接后查看。');
+      setJob(next);
       setError('');
     } catch (cause) {setError(errorText(cause));}
     finally {setCancelling(false);}
   };
   const progress = Math.min(100, Math.max(0, (job?.progress || 0) * 100));
+  const elapsed = job?.elapsedSeconds ?? 0;
+  const queuedSeconds = job?.createdAt && Number.isFinite(Date.parse(job.createdAt)) ? (now - Date.parse(job.createdAt)) / 1000 : 0;
+  const remaining = job?.estimatedRemainingSeconds;
+  const reconnect = () => {
+    if (recoveryFailed || !job) setRestoreVersion(value => value + 1);
+    else setPollVersion(value => value + 1);
+  };
   const bundle = async () => {
     setBundling(true);
     setError('');
@@ -288,10 +372,12 @@ export function ExportModal({project, onClose}: {project: Project; onClose: () =
   return <Modal title="导出工程" icon={<Download size={20} aria-hidden="true" />} onClose={onClose}>
     <div className="modal-body"><div className="modal-tabs" aria-label="导出格式"><button type="button" className={format === 'video' ? 'active' : ''} aria-pressed={format === 'video'} onClick={() => setFormat('video')}><Film size={16} aria-hidden="true" />MP4 视频</button><button type="button" className={format === 'bundle' ? 'active' : ''} aria-pressed={format === 'bundle'} onClick={() => setFormat('bundle')}><Package size={16} aria-hidden="true" />完整工程包</button><button type="button" className={format === 'json' ? 'active' : ''} aria-pressed={format === 'json'} onClick={() => setFormat('json')}><Code2 size={16} aria-hidden="true" />JSON</button></div>
       <dl className="export-summary"><div><dt>工程</dt><dd>{project.name}</dd></div><div><dt>画布</dt><dd>{project.width} × {project.height}</dd></div><div><dt>时长</dt><dd>{(totalFrames(project) / project.fps).toFixed(1)} 秒</dd></div><div><dt>帧率</dt><dd>{project.fps} 帧／秒</dd></div></dl>
-      {format === 'video' && job && <div className="export-progress"><div className="loading-row" role="status">{active ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : job.status === 'completed' ? <CheckCircle2 size={18} aria-hidden="true" /> : null}<strong>{jobLabels[job.status]}</strong><span>{Math.round(progress)}%</span></div><div className="progress-track" role="progressbar" aria-label="视频导出进度" aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}><div className="progress-fill" style={{width: `${progress}%`}} /></div>{job.message && /[\u4e00-\u9fff]/.test(job.message) && <p className={`status-message${job.status === 'failed' ? ' error' : ''}`} role={job.status === 'failed' ? 'alert' : 'status'}>{job.message}</p>}</div>}
+      {format === 'video' && restoring && <div className="loading-row" role="status"><LoaderCircle size={18} className="spin" aria-hidden="true" />正在读取导出任务</div>}
+      {format === 'video' && job && <div className="export-progress" aria-busy={active && !connectionError}><div className="loading-row export-status" role="status">{active ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : job.status === 'completed' ? <CheckCircle2 size={18} aria-hidden="true" /> : null}<strong>{active && connectionError ? '连接中断，正在重连' : exportStages[job.stage || ''] || jobLabels[job.status]}</strong><span>{Math.round(progress)}%</span></div><div className="progress-track" role="progressbar" aria-label="视频导出进度" aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}><div className="progress-fill" style={{width: `${progress}%`}} /></div><dl className="export-metrics">{job.status === 'queued' ? <><div><dt>队列位置</dt><dd>{job.queuePosition ? `第 ${job.queuePosition} 个` : '即将开始'}</dd></div><div><dt>已等待</dt><dd>{exportTime(queuedSeconds)}</dd></div></> : <><div><dt>已渲染</dt><dd>{job.renderedFrames ?? 0} / {job.totalFrames ?? totalFrames(project)} 帧</dd></div><div><dt>已用时</dt><dd>{exportTime(elapsed)}</dd></div>{active && <div><dt>预计剩余</dt><dd>{remaining !== undefined && remaining > 0 ? exportTime(remaining) : job.stage === 'encoding' || job.stage === 'audio' ? '即将完成' : '计算中'}</dd></div>}</>}</dl>{job.message && /[\u4e00-\u9fff]/.test(job.message) && <p className={`status-message${job.status === 'failed' ? ' error' : ''}`} role={job.status === 'failed' ? 'alert' : 'status'}>{job.message}</p>}</div>}
+      {format === 'video' && connectionError && <div className="export-connection status-message error" role="alert"><span>{connectionError}</span><button type="button" className="button secondary" onClick={reconnect} disabled={restoring}><RefreshCw size={16} aria-hidden="true" />重新连接</button></div>}
       {error && <div className="status-message error" role="alert">{error}</div>}
     </div>
-    <footer className="modal-footer"><button type="button" className="button secondary" onClick={onClose}><X size={16} aria-hidden="true" />关闭</button>{format === 'bundle' ? <button type="button" className="button primary" onClick={bundle} disabled={bundling}>{bundling ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <Package size={16} aria-hidden="true" />}{bundling ? '正在打包' : '下载工程包'}</button> : format === 'json' ? <button type="button" className="button primary" onClick={() => downloadProject(project)}><Download size={16} aria-hidden="true" />下载 JSON</button> : active ? <button type="button" className="button secondary" onClick={cancel} disabled={cancelling}>{cancelling ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <X size={16} aria-hidden="true" />}{cancelling ? '正在取消' : '取消导出'}</button> : job?.status === 'completed' && job.url ? <a className="button primary" href={job.url} download><Download size={16} aria-hidden="true" />下载视频</a> : <button type="button" className="button primary" onClick={start} disabled={starting}>{starting ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <Film size={16} aria-hidden="true" />}{starting ? '正在创建任务' : job ? '重新导出' : '开始导出'}</button>}</footer>
+    <footer className="modal-footer"><button type="button" className="button secondary" onClick={onClose}><X size={16} aria-hidden="true" />关闭</button>{format === 'bundle' ? <button type="button" className="button primary" onClick={bundle} disabled={bundling}>{bundling ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <Package size={16} aria-hidden="true" />}{bundling ? '正在打包' : '下载工程包'}</button> : format === 'json' ? <button type="button" className="button primary" onClick={() => downloadProject(project)}><Download size={16} aria-hidden="true" />下载 JSON</button> : active ? <button type="button" className="button secondary" onClick={cancel} disabled={cancelling}>{cancelling ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <X size={16} aria-hidden="true" />}{cancelling ? '正在取消' : '取消导出'}</button> : <><button type="button" className={`button ${job?.status === 'completed' && job.url ? 'secondary' : 'primary'}`} onClick={start} disabled={starting || restoring || recoveryFailed}>{starting ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <Film size={16} aria-hidden="true" />}{starting ? '正在创建任务' : job ? '重新导出' : '开始导出'}</button>{job?.status === 'completed' && job.url && <a className="button primary" href={job.url} download><Download size={16} aria-hidden="true" />下载视频</a>}</>}</footer>
   </Modal>;
 }
 

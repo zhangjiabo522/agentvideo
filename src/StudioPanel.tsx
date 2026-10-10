@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Cable, Check, ChevronRight, Circle, Loader2, Settings2, Sparkles, Square, Wrench } from "lucide-react";
+import { ArrowUp, Cable, Check, ChevronRight, Circle, Loader2, RefreshCw, Settings2, Sparkles, Square, Wrench } from "lucide-react";
 import { api } from "./api";
-import { Modal } from "./Dialogs";
+import { exportRequest, exportStages, exportTime, Modal } from "./Dialogs";
 import { type Project, type ExportJob } from "./types";
 import "./studio.css";
 
@@ -60,6 +60,8 @@ export function StudioPanel({ projectId, loaded, onEvent, onBusy, beforeStart, o
   const [copied, setCopied] = useState(false);
   const [exportJob, setExportJob] = useState<ExportJob>();
   const [exportJobId, setExportJobId] = useState<string>();
+  const [exportConnectionError, setExportConnectionError] = useState("");
+  const [exportRefresh, setExportRefresh] = useState(0);
   const callbacks = useRef({ onEvent, onBusy, beforeStart });
   callbacks.current = { onEvent, onBusy, beforeStart };
   const logRef = useRef<HTMLDivElement>(null);
@@ -71,6 +73,7 @@ export function StudioPanel({ projectId, loaded, onEvent, onBusy, beforeStart, o
     setError("");
     setExportJob(undefined);
     setExportJobId(undefined);
+    setExportConnectionError("");
     const receive = (event: StudioEvent) => {
       if (cancelled || event.projectId !== projectId) return;
       callbacks.current.onEvent(event);
@@ -119,25 +122,41 @@ export function StudioPanel({ projectId, loaded, onEvent, onBusy, beforeStart, o
     if (node) node.scrollTop = node.scrollHeight;
   }, [events.length]);
   useEffect(() => {
-    const id = exportJobId || run?.exportJobId;
-    if (!id) return;
-    let cancelled = false;
+    const id = exportJobId || (run?.projectId === projectId ? run.exportJobId : undefined);
+    if (!id || starting) return;
+    const controller = new AbortController();
+    let timer = 0;
+    let failures = 0;
+    setExportJob(previous => previous?.id === id && previous.projectId === projectId ? previous : undefined);
+    setExportConnectionError("");
     const refresh = async () => {
       try {
-        const value = await api<ExportJob>(`/api/exports/${id}`);
-        if (!cancelled) setExportJob(value);
-      } catch {}
+        const value = await exportRequest<ExportJob>(`/api/exports/${encodeURIComponent(id)}`, {signal: controller.signal});
+        if (value.id !== id || (value.projectId && value.projectId !== projectId)) throw new Error("导出任务与当前工程不一致，请刷新页面。");
+        if (controller.signal.aborted) return;
+        failures = 0;
+        setExportJob({...value, projectId: value.projectId || projectId});
+        setExportConnectionError("");
+        if (value.status === "queued" || value.status === "running") timer = window.setTimeout(refresh, 1500);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        failures++;
+        const delay = Math.min(10000, 1000 * 2 ** Math.min(failures, 4));
+        const message = cause instanceof Error && /[\u4e00-\u9fff]/.test(cause.message) ? cause.message : "暂时无法读取导出状态。";
+        setExportConnectionError(`${message} ${delay / 1000} 秒后重连。`);
+        timer = window.setTimeout(refresh, delay);
+      }
     };
     void refresh();
-    const timer = setInterval(refresh, 1500);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [run?.exportJobId, exportJobId]);
+    return () => {controller.abort(); window.clearTimeout(timer);};
+  }, [projectId, run?.projectId, run?.exportJobId, exportJobId, exportRefresh, starting]);
   const start = async () => {
     if (!prompt.trim() || starting || isActive(run)) return;
     setStarting(true);
     setError("");
     setExportJob(undefined);
     setExportJobId(undefined);
+    setExportConnectionError("");
     try {
       await callbacks.current.beforeStart();
       const value = await api<{ run: StudioRun }>("/api/agent/runs", {
@@ -166,7 +185,7 @@ export function StudioPanel({ projectId, loaded, onEvent, onBusy, beforeStart, o
       {run && <div className={`studio-run ${run.status}`}><strong>{run.prompt}</strong><span>{isActive(run) ? `正在执行 · 第 ${run.step} 步` : run.status === "completed" ? "执行完成" : run.status === "failed" ? "执行失败" : "已停止"}</span><p>{run.message}</p></div>}
       {!events.length && !run && <div className="studio-empty"><Wrench size={24} /><strong>等待 AI 开始剪辑</strong><p>可以使用内置 AI，也可以通过 MCP 让外部 AI 连接此工程。</p><button className="button secondary" onClick={() => setConnecting(true)}>连接外部 AI<ChevronRight size={14} /></button></div>}
       {events.map(event => <div className={`studio-step ${event.type.includes("error") ? "error" : ""}`} key={event.seq}><span className="studio-step-icon">{event.type === "run" ? <Sparkles size={13} /> : <Wrench size={13} />}</span><div><strong>{event.tool ? toolLabels[event.tool] || event.tool : event.type === "project.updated" ? "工程已更新" : "执行进度"}</strong><p>{event.message}</p><time>{new Date(event.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time></div></div>)}
-      {exportJob && <div className="studio-export"><strong>{exportJob.status === "completed" ? "视频已导出" : exportJob.status === "failed" ? "视频导出失败" : `视频导出 · ${Math.round(exportJob.progress * 100)}%`}</strong><p>{exportJob.message}</p>{exportJob.url && <a className="button primary" href={exportJob.url} download>下载视频</a>}</div>}
+      {(exportJob || exportConnectionError) && <div className="studio-export"><strong>{exportConnectionError ? "导出连接中断，正在重连" : exportJob?.status === "completed" ? "视频已导出" : exportJob?.status === "failed" ? "视频导出失败" : exportJob?.status === "cancelled" ? "导出已取消" : `${exportStages[exportJob?.stage || ""] || "视频导出"} · ${Math.round((exportJob?.progress || 0) * 100)}%`}</strong>{exportJob && <><p>{exportJob.message}</p>{(exportJob.totalFrames !== undefined || exportJob.elapsedSeconds !== undefined || exportJob.queuePosition !== undefined) && <dl className="export-metrics">{exportJob.status === "queued" ? <div><dt>队列位置</dt><dd>{exportJob.queuePosition ? `第 ${exportJob.queuePosition} 个` : "即将开始"}</dd></div> : <><div><dt>已渲染</dt><dd>{exportJob.renderedFrames ?? 0} / {exportJob.totalFrames ?? 0} 帧</dd></div><div><dt>已用时</dt><dd>{exportTime(exportJob.elapsedSeconds ?? 0)}</dd></div></>}{(exportJob.status === "queued" || exportJob.status === "running") && exportJob.estimatedRemainingSeconds !== undefined && <div><dt>预计剩余</dt><dd>{exportTime(exportJob.estimatedRemainingSeconds)}</dd></div>}</dl>}</>}{exportConnectionError && <><p className="error" role="alert">{exportConnectionError}</p><button type="button" className="button secondary" onClick={() => setExportRefresh(value => value + 1)}><RefreshCw size={14} aria-hidden="true" />重新连接导出</button></>}{exportJob?.status === "completed" && exportJob.url && <a className="button primary" href={exportJob.url} download>下载视频</a>}</div>}
       {error && <div className="chat-message error" role="alert">{error}</div>}
     </div>
     <div className="studio-composer">

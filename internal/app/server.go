@@ -17,16 +17,22 @@ import (
 )
 
 type Server struct {
-	mu         sync.RWMutex
-	dataDir    string
-	distDir    string
-	settings   Settings
-	httpClient *http.Client
-	studio     *studioState
-	studioMux  http.Handler
+	mu           sync.RWMutex
+	dataDir      string
+	distDir      string
+	settings     Settings
+	httpClient   *http.Client
+	studio       *studioState
+	studioMux    http.Handler
+	previewOnly  bool
+	publicVideos []PublicVideo
+	publicFiles  map[string]string
 }
 
 func NewServer(dataDir, distDir string) (*Server, error) {
+	if os.Getenv("VIDEO_PREVIEW_ONLY") == "1" {
+		return newPreviewServer(dataDir, distDir)
+	}
 	for _, dir := range []string{dataDir, filepath.Join(dataDir, "uploads"), filepath.Join(dataDir, "exports")} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return nil, err
@@ -44,7 +50,11 @@ func NewServer(dataDir, distDir string) (*Server, error) {
 }
 
 func (s *Server) Handler() http.Handler {
+	if s.previewOnly {
+		return s.previewHandler()
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/site", s.site)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/projects", s.listProjects)
 	mux.HandleFunc("POST /api/projects", s.studioProjectNotification(s.createProject))

@@ -4,6 +4,80 @@
 
 AI 有两种接入方式：在工作台使用已配置的文本模型进行多轮工具调用，或通过本机 HTTP MCP 服务让外部 AI 操作工程。两者使用同一套剪辑工具与校验规则。接入步骤、工具清单和请求示例见 [AI 接入说明](docs/AI接入.md)。
 
+公开视频预览：[llmvideo.jx.fyi](https://llmvideo.jx.fyi)。源码：[GitHub 仓库](https://github.com/zhangjiabo522/agentvideo)。预览站展示已导出视频，支持播放、拖动进度和下载；剪辑功能在本机工作台使用。
+
+## 公开预览部署
+
+设置 `VIDEO_PREVIEW_ONLY=1` 后，服务只提供公开作品页、站点配置、公开视频清单，以及清单中明确列出的 MP4 和封面。公开视频支持分段读取，浏览器可以拖动播放进度。预览模式不读取模型设置和密钥，不初始化 AI 剪辑、MCP、工程编辑或导出任务；MCP、模型调用、工程、设置、原素材及写入接口均关闭。
+
+公开数据单独放在 `public-data`，只复制允许公开的成片和封面到其 `exports` 目录。不要把本机整个 `data` 目录上传到预览站。服务从 `public-data/public-videos.json` 读取作品清单，更新清单后需要重启；清单缺失时显示空作品列表，清单格式错误时服务拒绝启动。
+
+```json
+[
+  {
+    "id": "yingxu-demo",
+    "title": "映序 AI 视频宣传片",
+    "description": "AI 制作视频的实际导出作品。",
+    "url": "/exports/yingxu-demo.mp4",
+    "poster": "/exports/yingxu-demo.jpg",
+    "duration": 33.1,
+    "width": 1280,
+    "height": 720,
+    "createdAt": "2026-10-10T12:00:00+08:00",
+    "featured": true
+  }
+]
+```
+
+`duration` 使用秒，尺寸使用像素，`createdAt` 使用带时区的日期时间。`url` 和 `poster` 必须是 `/exports/` 下的单层文件名；视频只允许 `.mp4`，封面只允许 `.png`、`.jpg`、`.jpeg`、`.webp`，无封面时可填写空字符串。未列出的文件、目录浏览和越界路径都不会提供。
+
+服务器按版本目录部署：
+
+```text
+/opt/yingxu-preview/
+  current -> releases/版本号
+  releases/
+    版本号/
+      yingxu
+      dist/
+      public-data/
+        public-videos.json
+        exports/
+  acme/
+```
+
+先在构建机器运行 `npm ci`、`npm run build` 和 `go build -o yingxu ./cmd/server`。构建环境需要与服务器的操作系统和处理器架构一致，或使用 Go 交叉编译。公开预览进程不需要 Node.js、FFmpeg、Chromium 或模型密钥。
+
+把程序、`dist`、独立的 `public-data` 上传到一个新的版本目录，目录和文件归管理员所有，给予服务用户读取权限。首次安装时创建专用用户、证书验证目录，并安装服务模板：
+
+```bash
+useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin yingxu-preview
+install -d -m 0755 /opt/yingxu-preview/releases /opt/yingxu-preview/acme
+install -m 0644 deploy/yingxu-preview.service /etc/systemd/system/yingxu-preview.service
+systemctl daemon-reload
+```
+
+切换 `current` 前确认版本目录已完整上传；替换下列 `20261010-120000` 为实际版本号：
+
+```bash
+ln -s /opt/yingxu-preview/releases/20261010-120000 /opt/yingxu-preview/current.next
+mv -Tf /opt/yingxu-preview/current.next /opt/yingxu-preview/current
+systemctl enable --now yingxu-preview
+systemctl restart yingxu-preview
+curl --fail http://127.0.0.1:18090/api/health
+```
+
+服务由专用用户运行，只监听 `127.0.0.1:18090`，使用只读文件系统限制。使用独立 Nginx 站点反向代理，不改变服务器已有站点。域名 `llmvideo.jx.fyi` 的 DNS 应指向部署服务器，HTTP 证书验证目录为 `/opt/yingxu-preview/acme`，证书放在 `/etc/letsencrypt/live/llmvideo.jx.fyi/`。首次签发证书时先启用模板中的 HTTP 验证配置，取得证书后再安装完整 HTTPS 配置：
+
+```bash
+certbot certonly --webroot -w /opt/yingxu-preview/acme -d llmvideo.jx.fyi --deploy-hook "/www/server/nginx/sbin/nginx -t && /www/server/nginx/sbin/nginx -s reload"
+install -m 0644 deploy/llmvideo.jx.fyi.conf /www/server/panel/vhost/nginx/llmvideo.jx.fyi.conf
+nginx -t
+nginx -s reload
+```
+
+证书续期也使用同一验证目录，续期成功后重新加载 Nginx。更新应用或视频时上传新版本目录，原子切换 `current` 并重启服务，再检查首页、公开视频列表、视频分段读取及 `/mcp` 的拒绝响应；回滚时将 `current` 切回保留的上一版本并重启。服务日志使用 `journalctl -u yingxu-preview` 查看，Nginx 日志放在 `/opt/yingxu-preview/`。
+
 ## 启动
 
 需要 Go 1.22 或更新版本、Node.js 22、FFmpeg，以及 Chromium。

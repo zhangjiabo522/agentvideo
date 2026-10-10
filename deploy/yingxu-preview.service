@@ -1,0 +1,26 @@
+[Unit]
+Description=映序公开视频预览站
+After=network.target
+
+[Service]
+Type=simple
+User=yingxu-preview
+Group=yingxu-preview
+WorkingDirectory=/opt/yingxu-preview/current
+Environment=VIDEO_PREVIEW_ONLY=1
+ExecStart=/opt/yingxu-preview/current/yingxu -addr 127.0.0.1:18090 -data /opt/yingxu-preview/current/public-data -dist /opt/yingxu-preview/current/dist
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,36 @@
+body {
+  margin: 0;
+}
+.site-entry-status {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  box-sizing: border-box;
+  color: #e6eee9;
+  background: #101713;
+  font: 16px/1.6 "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  text-align: center;
+}
+.site-entry-status strong {
+  font-size: 28px;
+}
+.site-entry-status p {
+  color: #adbcB2;
+}
+.site-entry-status button {
+  min-height: 44px;
+  padding: 10px 24px;
+  border: 1px solid #7dd3ae;
+  border-radius: 6px;
+  color: #13271c;
+  background: #7dd3ae;
+  font: inherit;
+  cursor: pointer;
+}
+.site-entry-status button:focus-visible {
+  outline: 3px solid #e6eee9;
+  outline-offset: 4px;
+}

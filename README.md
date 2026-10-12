@@ -1,139 +1,113 @@
-# 映序
+# 映序 · AgentVideo
 
-让 AI 调用工具制作视频，人在中文工作台实时观看、提出修改要求，并在需要时接管。后端使用 Go，前端使用 React。场景、文字、图片、图形、图表与音频保存在统一工程数据中，浏览器预览和 MP4 导出共用渲染组件，不依赖视频生成模型。
+**让 AI 使用工具剪视频，让人实时看见创作过程。**
 
-AI 有两种接入方式：在工作台使用已配置的文本模型进行多轮工具调用，或通过本机 HTTP MCP 服务让外部 AI 操作工程。两者使用同一套剪辑工具与校验规则。接入步骤、工具清单和请求示例见 [AI 接入说明](docs/AI接入.md)。
+映序把镜头、图层、图片、图表和音轨变成 AI 可以调用的工具。你描述目标，AI 读取工程、编排画面、生成素材、调整时间线并提交导出；中文工作台实时显示每次修改，需要精修时可以人工接管。
 
-公开视频预览：[llmvideo.jx.fyi](https://llmvideo.jx.fyi)。源码：[GitHub 仓库](https://github.com/zhangjiabo522/agentvideo)。预览站展示已导出视频，支持播放、拖动进度和下载；剪辑功能在本机工作台使用。
+项目使用 Go 后端与 React 前端，通过浏览器渲染、FFmpeg 编码生成 MP4。制作过程依靠文本模型的工具调用，可接入生图与配音服务，不依赖视频生成模型。适合产品说明、知识科普、数据解读和图片叙事等短视频。
 
-## 公开预览部署
+[观看说明视频与成片](https://llmvideo.jx.fyi) · [安装部署](docs/安装部署.md) · [使用指南](docs/使用指南.md) · [AI 与 MCP 接入](docs/AI接入.md)
 
-设置 `VIDEO_PREVIEW_ONLY=1` 后，服务只提供公开作品页、站点配置、公开视频清单，以及清单中明确列出的 MP4 和封面。公开视频支持分段读取，浏览器可以拖动播放进度。预览模式不读取模型设置和密钥，不初始化 AI 剪辑、MCP、工程编辑或导出任务；MCP、模型调用、工程、设置、原素材及写入接口均关闭。
+## 看看效果
 
-公开数据单独放在 `public-data`，只复制允许公开的成片和封面到其 `exports` 目录。不要把本机整个 `data` 目录上传到预览站。服务从 `public-data/public-videos.json` 读取作品清单，更新清单后需要重启；清单缺失时显示空作品列表，清单格式错误时服务拒绝启动。
+在 [映序作品站](https://llmvideo.jx.fyi) 观看和下载实际导出的宣传片、科普与风景短片。作品站用于观看成片，完整剪辑工作台按下方步骤安装。
 
-```json
-[
-  {
-    "id": "yingxu-demo",
-    "title": "映序 AI 视频宣传片",
-    "description": "AI 制作视频的实际导出作品。",
-    "url": "/exports/yingxu-demo.mp4",
-    "poster": "/exports/yingxu-demo.jpg",
-    "duration": 33.1,
-    "width": 1280,
-    "height": 720,
-    "createdAt": "2026-10-10T12:00:00+08:00",
-    "featured": true
-  }
-]
-```
+## 核心能力
 
-`duration` 使用秒，尺寸使用像素，`createdAt` 使用带时区的日期时间。`url` 和 `poster` 必须是 `/exports/` 下的单层文件名；视频只允许 `.mp4`，封面只允许 `.png`、`.jpg`、`.jpeg`、`.webp`，无封面时可填写空字符串。未列出的文件、目录浏览和越界路径都不会提供。
+| 能力 | 可以做什么 |
+| --- | --- |
+| AI 直接剪辑 | 内置 AI 多轮调用工具，或由外部 AI 通过本机 HTTP MCP 操作工程 |
+| 实时观看 | 画布、时间线、预览位置和执行记录随 AI 操作更新 |
+| 可编辑画面 | 文字、图片、矩形、圆形、柱状图与淡入、位移、缩放动画 |
+| 镜头与时间线 | 镜头排序和裁剪，图层显示区间调整，音轨移动和源素材裁剪 |
+| 真实素材库 | 图片缩略图、音频信息、名称搜索与类型筛选；上传和 AI 生成素材可持续复用，支持工程切换 |
+| 图片与配音 | 上传真实素材、调用生图服务；支持本地中文 TTS、小米 MiMo 和 OpenAI 兼容语音接口 |
+| 模型配置 | 文本、生图、语音独立配置，可获取模型列表，也可手动填写模型名 |
+| 成片导出 | H.264 MP4 与 AAC 混音，后台队列、阶段进度、帧数、取消和失败重试 |
+| 工程管理 | 自动保存、撤销重做、版本冲突检查、图层保护、JSON 与含素材 ZIP 工程包 |
+| 中文工作台 | 暗色和亮色主题、画布预览、素材库、属性面板与人工接管 |
 
-服务器按版本目录部署：
+## 最快启动
 
-```text
-/opt/yingxu-preview/
-  current -> releases/版本号
-  releases/
-    版本号/
-      yingxu
-      dist/
-      public-data/
-        public-videos.json
-        exports/
-  acme/
-```
-
-先在构建机器运行 `npm ci`、`npm run build` 和 `go build -o yingxu ./cmd/server`。构建环境需要与服务器的操作系统和处理器架构一致，或使用 Go 交叉编译。公开预览进程不需要 Node.js、FFmpeg、Chromium 或模型密钥。
-
-把程序、`dist`、独立的 `public-data` 上传到一个新的版本目录，目录和文件归管理员所有，给予服务用户读取权限。首次安装时创建专用用户、证书验证目录，并安装服务模板：
+建议在 Linux 上运行。先安装 **Go 1.22 或更新版本、Node.js 22、FFmpeg**，再执行：
 
 ```bash
-useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin yingxu-preview
-install -d -m 0755 /opt/yingxu-preview/releases /opt/yingxu-preview/acme
-install -m 0644 deploy/yingxu-preview.service /etc/systemd/system/yingxu-preview.service
-systemctl daemon-reload
-```
-
-切换 `current` 前确认版本目录已完整上传；替换下列 `20261010-120000` 为实际版本号：
-
-```bash
-ln -s /opt/yingxu-preview/releases/20261010-120000 /opt/yingxu-preview/current.next
-mv -Tf /opt/yingxu-preview/current.next /opt/yingxu-preview/current
-systemctl enable --now yingxu-preview
-systemctl restart yingxu-preview
-curl --fail http://127.0.0.1:18090/api/health
-```
-
-服务由专用用户运行，只监听 `127.0.0.1:18090`，使用只读文件系统限制。使用独立 Nginx 站点反向代理，不改变服务器已有站点。域名 `llmvideo.jx.fyi` 的 DNS 应指向部署服务器，HTTP 证书验证目录为 `/opt/yingxu-preview/acme`，证书放在 `/etc/letsencrypt/live/llmvideo.jx.fyi/`。首次签发证书时先启用模板中的 HTTP 验证配置，取得证书后再安装完整 HTTPS 配置：
-
-```bash
-certbot certonly --webroot -w /opt/yingxu-preview/acme -d llmvideo.jx.fyi --deploy-hook "/www/server/nginx/sbin/nginx -t && /www/server/nginx/sbin/nginx -s reload"
-install -m 0644 deploy/llmvideo.jx.fyi.conf /www/server/panel/vhost/nginx/llmvideo.jx.fyi.conf
-nginx -t
-nginx -s reload
-```
-
-证书续期也使用同一验证目录，续期成功后重新加载 Nginx。更新应用或视频时上传新版本目录，原子切换 `current` 并重启服务，再检查首页、公开视频列表、视频分段读取及 `/mcp` 的拒绝响应；回滚时将 `current` 切回保留的上一版本并重启。服务日志使用 `journalctl -u yingxu-preview` 查看，Nginx 日志放在 `/opt/yingxu-preview/`。
-
-## 启动
-
-需要 Go 1.22 或更新版本、Node.js 22、FFmpeg，以及 Chromium。
-
-```bash
-npm install
+git clone https://github.com/zhangjiabo522/agentvideo.git
+cd agentvideo
+npm ci
 npx playwright install chromium
 npm run start
 ```
 
-打开 [本机工作台](http://127.0.0.1:8080)。已安装的 Go 不在默认路径时，可通过 `GO_PATH` 指定其可执行文件。`VIDEO_ADDR` 可以修改监听地址，例如 `127.0.0.1:8081`。项目数据默认保存在 `data`，由 `VIDEO_DATA` 修改；`CHROME_PATH` 可指定已有 Chromium。
+打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)。`npm run start` 会构建前端并启动 Go 服务；首次生成预览截图和导出需要 Chromium 能正常运行。
 
-本地基础 TTS 使用 espeak-ng，可生成可导出的普通话 WAV，声音为机械音。Linux 系统已有 espeak-ng 时无需额外配置；当前 Debian/Ubuntu 环境可以运行以下免管理员权限安装命令。其他环境需自行安装 espeak-ng，并可用 `LOCAL_TTS_PATH` 指定程序。
+Debian / Ubuntu 如需补齐浏览器系统依赖，执行 `npx playwright install --with-deps chromium`。需要本地普通话配音时安装 `espeak-ng`；中文画面建议安装 `fonts-noto-cjk`。本地声音为基础机械音，更自然的旁白可选择已配置的远程语音模型。
 
 ```bash
-npm run setup:tts
+sudo apt-get update
+sudo apt-get install -y ffmpeg espeak-ng fonts-noto-cjk
 ```
 
-## 让 AI 开始剪辑
+自定义路径、常驻运行、服务器私有访问、备份和升级见 [完整工作台安装部署](docs/安装部署.md)。工作台当前没有用户登录与访问鉴权，默认仅监听本机；服务器使用 SSH 隧道访问。
 
-在“AI 剪辑导演”中描述目标，例如“制作一支 30 秒的映序宣传片，展示 AI 自动剪辑，加入中文旁白并导出”。内置 AI 使用模型设置中的文本服务，模型需要支持标准工具调用。没有模型配置会立即提示；只返回文字、不调用工具的模型不会被当作剪辑成功。
+## 做第一支视频
 
-外部 AI 的连接地址为 `http://127.0.0.1:8080/mcp`，连接类型选择 HTTP。可在“连接外部 AI”窗口取得当前工程编号和配置，也可参考 [MCP 配置示例](docs/mcp-config.json)。把工程编号交给 AI，要求它先读取工程，再逐步编辑、预览和导出。映序当前仅支持本机 MCP 连接。
+1. 新建横屏、竖屏或方形工程，在“模型设置”保存支持工具调用的文本模型。
+2. 按需要配置生图和语音服务，也可以先使用上传图片与本地中文配音。
+3. 在“AI 剪辑导演”描述成片目标，观察 AI 的执行步骤、画布与时间线变化。
+4. 提出修改要求，或停止内置 AI 后点击“人工接管”精修；完成后导出 MP4。
 
-工作台默认处于“AI 剪辑 · 观看”：镜头、图层、音频和执行步骤随服务端事件实时更新。需要手动修改时点击“人工接管”；内置 AI 正在运行时先停止任务。开始新 AI 任务前会保存人工修改。停止 AI 保留已经提交的剪辑，已经提交的导出任务需单独取消。
+可以从这段要求开始：
 
-顶部月亮或太阳按钮切换亮色、暗色模式，选择保存在当前浏览器；首次使用跟随系统主题。界面主题不会改变工程颜色或导出画面。
+> 制作一支 30 秒的产品说明视频，面向第一次使用映序的人。先介绍 AI 自动剪辑，再展示真实素材、时间线调整和中文旁白。使用清晰的大字与克制的动画。请读取当前工程，分步骤调用工具完成，检查预览并提交 MP4 导出。
 
-## 已有能力
+AI 返回“已提交导出”后，渲染仍会在后台继续。等导出任务显示“视频已就绪”再播放或下载；关闭弹窗、刷新页面后可以重新打开导出面板查看任务。
 
-- 新建横屏、竖屏、方形工程，镜头增删、复制与排序。
-- 文字、图片、矩形、圆形和柱状图；选择、移动、缩放、旋转、颜色、显示时间与基础动画编辑。
-- 时间线片段可拖动和左右裁剪。镜头调整顺序与时长，图层调整显示区间，音频调整位置与源素材截取区间。
-- 音频上传、旁白生成、音量、淡入淡出、预览和导出混音。
-- 本地 TTS、小米 MiMo 预置音色与音色设计、OpenAI 兼容 `/audio/speech` 接口。
-- 文本、生图与 TTS 独立配置，并通过供应商 `/models` 获取模型列表；不支持该接口的服务仍可手动填写模型名称。
-- AI 通过工具读取工程、批量编辑镜头和图层、移动裁剪音频、生成并放置图片与旁白、定位预览和导出。
-- MCP、HTTP 工具调用与内置多轮 Agent 共用校验和版本控制；每次有效修改立即保存，并通过服务端事件流推送。
-- 内置任务状态、步骤、取消与重启中断记录；每个工程同时一个内置任务，最多 20 轮模型调用、40 次工具调用、15 分钟。
-- 锁定图层和手动属性受保护；版本冲突后 AI 重新读取工程修正，不覆盖已经提交的修改。
-- 撤销重做、自动保存、本地恢复、版本冲突检测、JSON 与含素材 ZIP 工程包导入导出。
-- 真实 H.264 MP4 导出、AAC 音频、阶段与帧数进度、预计剩余时间、取消与失败重试。
+素材、人工接管、时间线裁剪、模型配置与导出操作详见 [使用指南](docs/使用指南.md)。
 
-模型密钥由后端加密保存，设置响应和工程包不包含密钥。修改服务地址或 TTS 供应商后需重新填密钥；同地址留空保留原密钥。
+## 接入外部 AI
 
-导出任务在后台运行，关闭窗口或刷新页面后，再次打开“导出视频”可恢复当前工程的任务并下载结果。排队时显示队列位置；渲染时显示帧数、耗时和预计剩余时间；连接中断会提示并自动重连。视频按原始帧率逐帧编码，静止画面复用无损截图，动画及图层出现、消失仍按工程帧号渲染。图片、截图和编码等待均有截止时间，连续 2 分钟无进展会终止异常渲染，总导出上限为 30 分钟。取消排队会立即释放位置。
+在支持 HTTP MCP 的客户端添加：
 
-## 配音接入
+```json
+{
+  "mcpServers": {
+    "yingxu": {
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
+}
+```
 
-打开模型设置的“语音模型”页签，选择语音来源。小米 MiMo 默认地址为 `https://api.xiaomimimo.com/v1`，模型为 `mimo-v2.5-tts`，默认音色为 `mimo_default`。也支持冰糖、茉莉、苏打、白桦等官方预置音色。`mimo-v2.5-tts-voicedesign` 需要填写音色或风格描述，当前未实现音色克隆入口。
+在工作台“连接外部 AI”窗口复制当前工程编号，交给 AI，并要求它先调用 `video_project_get` 读取工程、`video_assets_list` 查询真实素材。AI 可调用镜头编辑、生图、配音、预览截图、导出与进度查询工具。不同客户端的 HTTP 配置字段可能不同，连接方式及完整工具目录见 [AI 接入说明](docs/AI接入.md)。
 
-MiMo 按[官方文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/speech-synthesis-v2.5)调用 `/chat/completions`，将旁白放入 `assistant` 消息，读取 Base64 WAV。OpenAI 兼容来源调用 `/audio/speech` 并接收音频文件。
+内置 AI 和外部 AI 共用剪辑校验与版本控制。内置任务只操作绑定工程，最多 20 轮模型请求、40 次工具调用、15 分钟；外部客户端自行控制调用次数与停止。工作台的人工接管按钮无法停止另一个客户端中的 AI。
 
-人工配音入口支持先试听再加入时间线；AI 的 `video_speech_generate` 工具会实际合成并自动加入音轨，必要时延长最后一个镜头，随后由 AI 根据真实旁白时长调整画面。自动延长仍需遵守工程上限和受保护内容约束。
+## 模型与配音
 
-## 验证
+| 服务 | 配置要求 |
+| --- | --- |
+| 文本模型 | 兼容 `/chat/completions` 并支持标准工具调用；填写服务基础地址、模型名和密钥 |
+| 生图模型 | 兼容 `/images/generations`，返回图片 URL 或 Base64 图片数据 |
+| 本地 TTS | 安装 `espeak-ng`，默认普通话音色 `cmn`，无需远程密钥 |
+| 小米 MiMo | 地址 `https://api.xiaomimimo.com/v1`，模型 `mimo-v2.5-tts`，默认音色 `mimo_default` |
+| OpenAI 兼容 TTS | 兼容 `/audio/speech`；填写语音服务地址、模型、音色和密钥 |
+
+服务基础地址保留供应商要求的版本前缀，例如 `/v1`，不要填写完整的 `/chat/completions` 或 `/images/generations` 地址。模型列表通过供应商 `/models` 获取；供应商不支持列表时直接填写模型名。
+
+MiMo 支持预置音色与 `mimo-v2.5-tts-voicedesign` 音色设计，后者需要填写风格描述。接口依据 [小米官方文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/speech-synthesis-v2.5)，当前没有音色克隆入口。
+
+密钥在后端加密保存，读取设置时不回显，也不会包含在工程包中。同服务地址下密钥留空会保留原值；更换服务地址或语音供应商后需要重新填写。普通连接测试不代表模型已经具备工具调用能力；生图配置检查不会实际生成图片。
+
+## 当前范围
+
+单个工程最多 **120 秒、20 个镜头、300 个视觉对象、12 条音轨**。导出使用工程原始尺寸，宽高需为 64 至 1920 像素之间的偶数。实际渲染速度取决于分辨率、动画、素材和机器性能。
+
+镜头按顺序连续排列，图层在所属镜头内调整显示时间，音频在全局时间线上移动。缩短镜头会裁剪越界的图层和音轨，可撤销恢复。支持的源素材是图片与音频，尚未实现多轨视频素材剪辑、自动语音识别、逐词字幕对齐、复杂三维、任意代码组件和多人协作。
+
+文本模型能根据工程结构编排画面；只有具备视觉能力的外部模型才能理解预览工具返回的图片。生图和语音的真实效果取决于供应商配置，协议兼容测试不能替代每家服务的实际验证。
+
+## 开发与验证
 
 ```bash
 go test -race ./...
@@ -143,16 +117,6 @@ npm run test:browser
 npm run test:export
 ```
 
-浏览器验收需要已启动的本地服务，报告与截图保存在 `test-results`。可通过 `TEST_ORIGIN` 指定其他端口。验收使用独立工程，模型请求用测试响应替代，避免发起付费调用；后端协议测试也使用独立测试服务。
+浏览器验收需要已启动的服务，可通过 `TEST_ORIGIN` 指定地址。导出验收会启动独立临时服务，需要 Go、FFmpeg、FFprobe 和 Chromium。测试结果保存在 `test-results`；自动化模型测试使用模拟响应，不代表所有远程供应商已验证。
 
-导出验收会启动独立临时服务，验证动画、镜头切换、静止帧复用、音频裁剪与混合，以及取消、素材缺失和编码器异常时的任务清理。运行需要 Go、FFmpeg 与 Chromium，结果保存在 `test-results/export-verification.json`。
-
-内置 Agent 的多轮工具执行、校验修复、取消、重复任务、工程隔离、循环上限、重启恢复和宣传片导出提交已通过模拟集成及竞态测试。当前 MCP 外部客户端实际连接、新版实时观看与人工接管、暗色模式和真实模型宣传片仍需完成端到端验收，不能用早期手动编辑测试替代这些证据。
-
-## 当前范围
-
-这是可运行的首版，尚未实现完整 PRD 的多人协作、历史版本工作台、自由代码编辑、复杂三维、逐词字幕对齐、自动语音识别和专业视频素材剪辑。镜头目前连续排列，拖动主体调整顺序；图层在所属镜头内移动，音频在全局时间线上移动。镜头缩短会裁剪所属图层显示区间及超过工程结尾的音频片段，完全越界的片段会移出时间线，可撤销恢复；源图片与音频文件保留。
-
-建议工程范围为最多 120 秒、20 个镜头、300 个视觉对象、12 条音轨。视频按工程原始尺寸导出，最大 1920 像素；不同机器的渲染速度需要实测。MiMo、OpenAI 和生图服务的真实效果取决于用户配置，现有验证不代表已使用真实密钥测试所有供应商。
-
-示例风景图片来自 Unsplash，随工程以素材形式保存。详细规划见 [产品需求文档](docs/PRD.md)，实现记录见 [实现说明](docs/实现说明.md)。
+[安装部署](docs/安装部署.md) · [使用指南](docs/使用指南.md) · [AI 接入与工具协议](docs/AI接入.md) · [实现说明](docs/实现说明.md) · [产品规划](docs/PRD.md)

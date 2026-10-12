@@ -108,12 +108,12 @@ func (s *Server) speech(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, 502, "配音音频无法解析，请重试")
 		return
 	}
-	assetURL, err := s.saveAsset(result.Data, result.Ext)
+	asset, err := s.saveAssetWithMetadata(r.Context(), result.Data, result.Ext, assetOptions{Name: assetPromptName(speechName(result.Provider), text), Source: "speech", DurationSeconds: duration})
 	if err != nil {
 		errorJSON(w, 500, "配音音频保存失败")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"url": assetURL, "name": speechName(result.Provider), "type": result.Type, "duration": int(math.Ceil(duration * speechFrameRate)), "durationSeconds": duration, "provider": result.Provider})
+	writeJSON(w, 200, map[string]any{"url": asset.URL, "name": asset.Name, "type": result.Type, "duration": int(math.Ceil(duration * speechFrameRate)), "durationSeconds": duration, "provider": result.Provider})
 }
 
 func defaultSpeechVoice(provider string) string {

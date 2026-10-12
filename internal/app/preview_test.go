@@ -71,7 +71,7 @@ func TestPreviewRejectsMCPAndPrivateRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/mcp", "/mcp/", "/api/tools", "/api/tools/call", "/api/projects", "/api/projects/private",
 		"/api/settings", "/api/settings/test", "/api/models", "/api/agent", "/api/agent/runs",
-		"/api/speech", "/api/images/generate", "/api/uploads", "/api/exports", "/api/bundle",
+		"/api/assets", "/api/speech", "/api/images/generate", "/api/uploads", "/api/exports", "/api/bundle",
 		"/uploads/private.png", "/data/settings.json", "/render.html", "/exports/private.mp4", "/exports/private.wav", "/exports/",
 	} {
 		for _, method := range []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"} {

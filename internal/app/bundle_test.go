@@ -85,6 +85,15 @@ func TestBundleSnapshotRoundTripWithImageAndAudio(t *testing.T) {
 			t.Fatal("工程包素材未完整恢复")
 		}
 	}
+	assets := listedAssets(t, handler, "?source=imported&projectId="+loaded.ID)
+	if len(assets) != 2 {
+		t.Fatalf("导入素材未加入素材目录: %+v", assets)
+	}
+	for _, asset := range assets {
+		if asset.Name != "装饰" && asset.Name != "音乐" {
+			t.Fatalf("导入素材名称未保留: %+v", asset)
+		}
+	}
 }
 
 func archiveData(t *testing.T, entries map[string][]byte) []byte {

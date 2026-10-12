@@ -106,7 +106,7 @@ function fixture(extra = {}) {
     node('位移动画', {x: 56, color: '#00ff00', animation: 'slide'}),
     node('缩放动画', {x: 112, color: '#0000ff', width: 48, height: 48, animation: 'zoom'}),
     node('临时图层', {x: 176, y: 80, color: '#ffffff', start: 10, end: 20}),
-    node('镜头内延迟图片', {type: 'image', x: 208, y: 8, width: 32, height: 32, src: '/uploads/fixture.svg', start: 15, end: 25})
+    node('镜头内延迟图片', {type: 'image', x: 208, y: 8, width: 32, height: 32, src: '/uploads/fixture.png', start: 15, end: 25})
   ]}, {id: randomUUID(), name: '静止镜头', duration: 40, background: '#22aa44', notes: '', nodes: []}], audio: [
     {id: randomUUID(), name: '裁剪淡入淡出', src: '/uploads/fixture.wav', start: 10, trimStart: 20, duration: 40, sourceDuration: 80, volume: 0.5, fadeIn: 5, fadeOut: 5},
     {id: randomUUID(), name: '第二段音轨', src: '/uploads/fixture.wav', start: 60, trimStart: 0, duration: 10, sourceDuration: 80, volume: 0.3, fadeIn: 0, fadeOut: 0}
@@ -212,7 +212,7 @@ try {
   await access(path.join(root, 'dist', 'render.html'));
   await mkdir(path.join(dataDir, 'uploads'), {recursive: true});
   await writeFile(path.join(dataDir, 'uploads', 'fixture.wav'), waveform());
-  await writeFile(path.join(dataDir, 'uploads', 'fixture.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#ffff00"/></svg>');
+  await writeFile(path.join(dataDir, 'uploads', 'fixture.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/mj5RNkuZ47SZtr0DAAAAAAAAAACAxw5dKvhqiYlpRgAAAABJRU5ErkJggg==', 'base64'));
   const portProbe = createServer();
   await new Promise(resolve => portProbe.listen(0, '127.0.0.1', resolve));
   const port = portProbe.address().port;

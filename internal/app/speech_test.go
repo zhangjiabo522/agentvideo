@@ -93,6 +93,10 @@ func TestSpeechOpenAICompatibilityAndSavedDuration(t *testing.T) {
 	if err != nil || !bytes.Equal(data, testSpeechWAV()) {
 		t.Fatal("配音未以真实音频保存至素材库")
 	}
+	assets := listedAssets(t, server.Handler(), "?source=speech")
+	if len(assets) != 1 || assets[0].URL != result.URL || assets[0].DurationSeconds != 1 || !strings.Contains(assets[0].Name, "你好，映序") {
+		t.Fatalf("配音来源和文案没有保留到素材库: %+v", assets)
+	}
 }
 
 func TestSpeechMiMoAssistantTextAndAPIKey(t *testing.T) {

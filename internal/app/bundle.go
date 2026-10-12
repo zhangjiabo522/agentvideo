@@ -3,6 +3,7 @@ package app
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -237,7 +238,7 @@ func (s *Server) unpackBundle(reader *zip.Reader) (Project, []string, error) {
 		return project, created, errors.New("工程数据包含多份 JSON 或额外内容")
 	}
 	references := map[string]string{}
-	restore := func(source *string, imageOnly bool) error {
+	restore := func(source *string, imageOnly bool, name string) error {
 		if *source == "" {
 			return nil
 		}
@@ -260,7 +261,8 @@ func (s *Server) unpackBundle(reader *zip.Reader) (Project, []string, error) {
 		if err != nil {
 			return fmt.Errorf("素材 %s 格式无效: %s", *source, err)
 		}
-		restored, err := s.saveAsset(data, ext)
+		asset, err := s.saveAssetWithMetadata(context.Background(), data, ext, assetOptions{Name: name, Source: "imported"})
+		restored := asset.URL
 		if err != nil {
 			return err
 		}
@@ -271,13 +273,13 @@ func (s *Server) unpackBundle(reader *zip.Reader) (Project, []string, error) {
 	}
 	for i := range project.Scenes {
 		for j := range project.Scenes[i].Nodes {
-			if err := restore(&project.Scenes[i].Nodes[j].Src, true); err != nil {
+			if err := restore(&project.Scenes[i].Nodes[j].Src, true, project.Scenes[i].Nodes[j].Name); err != nil {
 				return project, created, err
 			}
 		}
 	}
 	for i := range project.Audio {
-		if err := restore(&project.Audio[i].Src, false); err != nil {
+		if err := restore(&project.Audio[i].Src, false, project.Audio[i].Name); err != nil {
 			return project, created, err
 		}
 	}

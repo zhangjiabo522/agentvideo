@@ -154,7 +154,7 @@ func TestStudioMCPNegotiationCallsAndOrigin(t *testing.T) {
 	if response.Code != 403 {
 		t.Fatal("跨站调用未拒绝")
 	}
-	if len(server.studioToolDefinitions()) != 10 {
+	if len(server.studioToolDefinitions()) != 11 {
 		t.Fatal("工具目录不完整")
 	}
 }

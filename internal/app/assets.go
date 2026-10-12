@@ -2,9 +2,9 @@ package app
 
 import (
 	"bytes"
-	"crypto/rand"
+	"context"
 	"encoding/base64"
-	"encoding/hex"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -13,8 +13,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -43,12 +41,12 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, 400, err.Error())
 		return
 	}
-	assetURL, err := s.saveAsset(data, ext)
+	asset, err := s.saveAssetWithMetadata(r.Context(), data, ext, assetOptions{Name: header.Filename, Source: "upload"})
 	if err != nil {
 		errorJSON(w, 500, "上传素材保存失败")
 		return
 	}
-	writeJSON(w, 201, map[string]string{"url": assetURL, "name": filepath.Base(header.Filename), "type": kind})
+	writeJSON(w, 201, map[string]string{"url": asset.URL, "name": asset.Name, "type": kind})
 }
 
 func assetFormat(data []byte, imageOnly bool) (string, string, error) {
@@ -65,6 +63,9 @@ func assetFormat(data []byte, imageOnly bool) (string, string, error) {
 		return ".jpg", "image/jpeg", nil
 	}
 	if len(data) >= 16 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		if _, _, err := webpDimensions(data); err != nil {
+			return "", "", err
+		}
 		return ".webp", "image/webp", nil
 	}
 	if !imageOnly {
@@ -84,6 +85,47 @@ func assetFormat(data []byte, imageOnly bool) (string, string, error) {
 	return "", "", errors.New("仅支持 PNG、JPEG、WebP 图片，以及 MP3、WAV、M4A、OGG 音频")
 }
 
+func webpDimensions(data []byte) (int, int, error) {
+	invalid := errors.New("WebP 图片格式损坏，无法读取")
+	if len(data) < 20 || int64(binary.LittleEndian.Uint32(data[4:8]))+8 != int64(len(data)) {
+		return 0, 0, invalid
+	}
+	for offset := 12; offset+8 <= len(data); {
+		size := int64(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		end := int64(offset) + 8 + size
+		if end > int64(len(data)) {
+			return 0, 0, invalid
+		}
+		chunk := data[offset+8 : int(end)]
+		width, height := 0, 0
+		switch string(data[offset : offset+4]) {
+		case "VP8 ":
+			if len(chunk) >= 10 && bytes.Equal(chunk[3:6], []byte{0x9d, 0x01, 0x2a}) {
+				width = int(binary.LittleEndian.Uint16(chunk[6:8]) & 0x3fff)
+				height = int(binary.LittleEndian.Uint16(chunk[8:10]) & 0x3fff)
+			}
+		case "VP8L":
+			if len(chunk) >= 5 && chunk[0] == 0x2f {
+				bits := binary.LittleEndian.Uint32(chunk[1:5])
+				width, height = int(bits&0x3fff)+1, int((bits>>14)&0x3fff)+1
+			}
+		case "VP8X":
+			if len(chunk) >= 10 {
+				width = int(chunk[4]) + int(chunk[5])<<8 + int(chunk[6])<<16 + 1
+				height = int(chunk[7]) + int(chunk[8])<<8 + int(chunk[9])<<16 + 1
+			}
+		}
+		if width > 0 && height > 0 {
+			if width > 8192 || height > 8192 || int64(width)*int64(height) > 32_000_000 {
+				return 0, 0, errors.New("图片过大，尺寸需不超过 8192 且总像素不超过 3200 万")
+			}
+			return width, height, nil
+		}
+		offset = int(end + size%2)
+	}
+	return 0, 0, invalid
+}
+
 func checkImageDimensions(data []byte) error {
 	config, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil || config.Width < 1 || config.Height < 1 {
@@ -96,15 +138,8 @@ func checkImageDimensions(data []byte) error {
 }
 
 func (s *Server) saveAsset(data []byte, ext string) (string, error) {
-	var identifier [16]byte
-	if _, err := rand.Read(identifier[:]); err != nil {
-		return "", err
-	}
-	name := hex.EncodeToString(identifier[:]) + ext
-	if err := os.WriteFile(filepath.Join(s.dataDir, "uploads", name), data, 0600); err != nil {
-		return "", err
-	}
-	return "/uploads/" + name, nil
+	asset, err := s.saveAssetWithMetadata(context.Background(), data, ext, assetOptions{Source: "existing"})
+	return asset.URL, err
 }
 
 func (s *Server) generateImage(w http.ResponseWriter, r *http.Request) {
@@ -191,10 +226,10 @@ func (s *Server) generateImage(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, 502, "生成图片格式无效: "+err.Error())
 		return
 	}
-	assetURL, err := s.saveAsset(data, ext)
+	asset, err := s.saveAssetWithMetadata(r.Context(), data, ext, assetOptions{Name: assetPromptName("生成图片", input.Prompt), Source: "generated"})
 	if err != nil {
 		errorJSON(w, 500, "生成图片保存失败")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"url": assetURL, "name": "生成图片", "type": kind, "revisedPrompt": result.Revised})
+	writeJSON(w, 200, map[string]string{"url": asset.URL, "name": asset.Name, "type": kind, "revisedPrompt": result.Revised})
 }

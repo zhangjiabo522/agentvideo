@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -50,6 +51,9 @@ import {
   BarChart3,
 } from "lucide-react";
 import { api, downloadJSON } from "./api";
+import { AssetLibrary, assetKind, type Asset } from "./AssetLibrary";
+import { readAudioDuration } from "./media";
+import { ProjectSwitcher } from "./ProjectSwitcher";
 import { blankScene, createNode, createProject, demoProject } from "./demo";
 import { SceneView } from "./SceneView";
 import {
@@ -210,9 +214,16 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [assetBusy, setAssetBusy] = useState(false);
   const [imagePrompt, setImagePrompt] = useState("");
-  const [uploadAssets, setUploadAssets] = useState<
-    { url: string; name: string; type: string }[]
-  >([]);
+  const [libraryAssets, setLibraryAssets] = useState<Asset[]>([]);
+  const [recentAssets, setRecentAssets] = useState<Asset[]>([]);
+  const [assetsLoading, setAssetsLoading] = useState(false);
+  const [assetsError, setAssetsError] = useState("");
+  const [assetRefresh, setAssetRefresh] = useState(0);
+  const assetsRequestRef = useRef<AbortController | undefined>(undefined);
+  const assetOperationRef = useRef(false);
+  const switchProjectRef = useRef(false);
+  const interactionRef = useRef({ observerMode, busy });
+  interactionRef.current = { observerMode, busy };
   const uploadRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const [saveTick, setSaveTick] = useState(0);
@@ -224,9 +235,63 @@ export default function App() {
     (track) => track.id === selectedAudioId,
   );
 
+  const projectAssets = useMemo(() => {
+    const images = project.scenes.flatMap(scene => scene.nodes.filter(node => node.type === "image" && node.src).map(node => ({
+      id: node.src!, url: node.src!, name: node.name || "工程图片", type: "image", source: "project",
+    })));
+    const audio = project.audio.map(track => ({
+      id: track.src, url: track.src, name: track.name || "工程音频", type: "audio", source: "project",
+      durationSeconds: (track.sourceDuration || track.duration + track.trimStart) / project.fps,
+    }));
+    return [...images, ...audio] as Asset[];
+  }, [project.scenes, project.audio, project.fps]);
+  const projectAssetKey = projectAssets.map(asset => asset.url).sort().join("|");
+  const usedAssetURLs = useMemo(() => new Set(projectAssets.map(asset => asset.url)), [projectAssets]);
+  const assets = useMemo(() => {
+    const unique = new Map<string, Asset>();
+    for (const asset of [...libraryAssets, ...recentAssets, ...projectAssets]) {
+      if (!asset.url || unique.has(asset.url)) continue;
+      unique.set(asset.url, { ...asset, id: asset.id || asset.url, name: asset.name || "未命名素材" });
+    }
+    return Array.from(unique.values()).sort((a, b) => Number(usedAssetURLs.has(b.url)) - Number(usedAssetURLs.has(a.url)) || (b.createdAt || "").localeCompare(a.createdAt || ""));
+  }, [libraryAssets, recentAssets, projectAssets, usedAssetURLs]);
+  const refreshAssets = useCallback(async () => {
+    assetsRequestRef.current?.abort();
+    const request = new AbortController();
+    assetsRequestRef.current = request;
+    setAssetsLoading(true);
+    setAssetsError("");
+    try {
+      const result = await api<Asset[] | { assets: Asset[] }>("/api/assets", { signal: request.signal, cache: "no-store" });
+      if (request.signal.aborted) return;
+      const list = Array.isArray(result) ? result : result.assets;
+      if (!Array.isArray(list)) throw new Error("素材列表格式不正确，请刷新重试。");
+      setLibraryAssets(list);
+      setRecentAssets(items => items.filter(item => !list.some(asset => asset.url === item.url)));
+    } catch (error) {
+      if (!request.signal.aborted) setAssetsError((error as Error).message || "素材库连接失败，请重试。");
+    } finally {
+      if (!request.signal.aborted) setAssetsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "assets" || !loaded) return;
+    void refreshAssets();
+    const refreshVisible = () => { if (document.visibilityState === "visible") void refreshAssets(); };
+    const timer = window.setInterval(refreshVisible, 15000);
+    window.addEventListener("focus", refreshVisible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refreshVisible);
+      assetsRequestRef.current?.abort();
+    };
+  }, [tab, loaded, project.id, projectAssetKey, assetRefresh, refreshAssets]);
+
   const notify = useCallback((text: string) => setToast(text), []);
   const receiveStudioEvent = useCallback((event: StudioEvent) => {
     if (event.projectId !== projectRef.current.id) return;
+    if (event.type === "assets.updated" || event.tool === "video_image_generate" || event.tool === "video_speech_generate") setAssetRefresh(value => value + 1);
     if (event.type === "preview.seek" && typeof event.data?.frame === "number") {
       setPlaying(false);
       setFrame(Math.max(0, Math.min(event.data.frame, totalFrames(projectRef.current) - 1)));
@@ -377,11 +442,11 @@ export default function App() {
     const observer = new ResizeObserver((entries) => {
       const box = entries[0].contentRect;
       setScale(
-        Math.min(
-          (box.width - 64) / project.width,
-          (box.height - 40) / project.height,
-          1,
-        ),
+        Math.max(0.05, Math.min(
+          (box.width - (box.width < 600 ? 24 : 40)) / project.width,
+          (box.height - 52) / project.height,
+          2,
+        )),
       );
     });
     observer.observe(target);
@@ -418,7 +483,8 @@ export default function App() {
       }
     for (const track of project.audio) {
       let audio = audioRefs.current.get(track.id);
-      if (!audio) {
+      if (!audio || audio.getAttribute("src") !== track.src) {
+        audio?.pause();
         audio = new Audio(track.src);
         audioRefs.current.set(track.id, audio);
       }
@@ -451,9 +517,13 @@ export default function App() {
   );
 
   function edit(mutator: (draft: Project) => void, history = true) {
-    if (observerMode || busy) {
-      notify(busy ? "AI 正在剪辑，请先停止任务再接管。" : "当前为实时观看，点击人工接管后可手动修改。");
-      return;
+    if (switchProjectRef.current) {
+      notify("正在切换工程，请稍候再修改。");
+      return false;
+    }
+    if (interactionRef.current.observerMode || interactionRef.current.busy) {
+      notify(interactionRef.current.busy ? "AI 正在剪辑，请先停止任务再接管。" : "当前为实时观看，点击人工接管后可手动修改。");
+      return false;
     }
     const before = projectRef.current;
     const draft = clone(before);
@@ -465,7 +535,7 @@ export default function App() {
       draft.audio.length > 12
     ) {
       notify("工程上限：120 秒、20 个镜头、300 个图层、12 条音轨");
-      return;
+      return false;
     }
     if (fitAudioToProject(draft))
       notify("超出工程结尾的音频片段已裁掉，可撤销恢复；原素材保留。");
@@ -477,6 +547,7 @@ export default function App() {
     projectRef.current = draft;
     setProject(draft);
     setSaveStatus("待保存");
+    return true;
   }
 
   function updateNode(patch: Partial<SceneNode>) {
@@ -506,7 +577,7 @@ export default function App() {
       latest.scenes
         .slice(0, index)
         .reduce((sum, scene) => sum + scene.duration, 0) +
-        Math.min(30, latest.scenes[index].duration - 1),
+        Math.min(latest.fps, latest.scenes[index].duration - 1),
     );
     setSelectedId(undefined);
     setSelectedAudioId(undefined);
@@ -535,6 +606,7 @@ export default function App() {
   }
 
   function undo() {
+    if (interactionRef.current.observerMode || interactionRef.current.busy || switchProjectRef.current) return;
     if (!past.length) return;
     const previous = past[past.length - 1];
     const snapshot = clone(projectRef.current);
@@ -550,6 +622,7 @@ export default function App() {
   }
 
   function redo() {
+    if (interactionRef.current.observerMode || interactionRef.current.busy || switchProjectRef.current) return;
     if (!future.length) return;
     const next = future[future.length - 1];
     const snapshot = clone(projectRef.current);
@@ -614,14 +687,26 @@ export default function App() {
     }
   }
 
+  async function beforeAgentStart() {
+    if (switchProjectRef.current || assetOperationRef.current) throw new Error("请先等待当前素材或工程操作完成，再启动 AI 剪辑。");
+    await saveBeforeSwitch();
+    if (switchProjectRef.current || assetOperationRef.current) throw new Error("当前正在处理素材或工程，请稍后再启动 AI 剪辑。");
+  }
+
   function addSpeech(result: SpeechResult, text: string) {
+    rememberAsset({ ...result, id: result.url, source: "speech", durationSeconds: result.durationSeconds || result.duration / 30 });
+    if (interactionRef.current.observerMode || interactionRef.current.busy) {
+      setModal(null);
+      notify("旁白已保存在素材库，人工接管后可加入时间线。");
+      return;
+    }
     const duration = Math.max(
       1,
       Math.ceil((result.durationSeconds || result.duration / 30) * project.fps),
     );
     const start = Math.min(current.offset, Math.max(0, frameCount - duration));
     const usable = Math.min(duration, frameCount - start);
-    edit((draft) =>
+    const changed = edit((draft) =>
       draft.audio.push({
         id: uid(),
         name: `旁白 · ${text.slice(0, 12)}`,
@@ -635,6 +720,7 @@ export default function App() {
         fadeOut: 0,
       }),
     );
+    if (!changed) return;
     setModal(null);
     notify(
       duration > usable
@@ -644,20 +730,28 @@ export default function App() {
   }
 
   async function newProject(name: string, width: number, height: number) {
+    if (switchProjectRef.current) return;
+    switchProjectRef.current = true;
     try {
-      if (assetBusy || busy)
+      if (assetOperationRef.current || interactionRef.current.busy)
         throw new Error("请先停止或等待当前生成任务完成，再切换工程。");
       await saveBeforeSwitch();
       const value = await api<Project>("/api/projects", {
         method: "POST",
         body: JSON.stringify(createProject(name, width, height)),
       });
+      if (interactionRef.current.busy) {
+        setProjects(items => [value, ...items.filter(item => item.id !== value.id)]);
+        throw new Error("新工程已创建并保留在项目列表；AI 任务正在运行，暂未切换。");
+      }
       revisionRef.current = value.revision;
       savedContentRef.current.set(value.id, contentKey(value));
       projectRef.current = value;
       setProject(value);
+      setPlaying(false);
       setFrame(0);
       setSelectedId(undefined);
+      setSelectedAudioId(undefined);
       setPast([]);
       setFuture([]);
       setModal(null);
@@ -666,118 +760,174 @@ export default function App() {
     } catch (error) {
       notify((error as Error).message);
       throw error;
+    } finally {
+      switchProjectRef.current = false;
     }
   }
 
   async function openProject(value: Project) {
-    if (assetBusy || busy) {
-      notify("请先停止或等待当前生成任务完成，再切换工程。");
+    if (assetOperationRef.current || interactionRef.current.busy || switchProjectRef.current) {
+      notify("请先停止或等待当前任务完成，再切换工程。");
       return;
     }
+    switchProjectRef.current = true;
     try {
       await saveBeforeSwitch();
+      const latest = await api<Project>(`/api/projects/${value.id}`, { cache: "no-store" });
+      if (interactionRef.current.busy) throw new Error("AI 任务已开始，请停止后再切换工程。");
+      setPlaying(false);
+      revisionRef.current = latest.revision;
+      savedContentRef.current.set(latest.id, contentKey(latest));
+      projectRef.current = clone(latest);
+      setProject(projectRef.current);
+      setProjects(items => [latest, ...items.filter(item => item.id !== latest.id)]);
+      setFrame(0);
+      setSelectedId(undefined);
+      setSelectedAudioId(undefined);
+      setPast([]);
+      setFuture([]);
+      setTab("scenes");
+      setSaveStatus("已保存");
+      setMessages([{ role: "assistant", text: `已打开「${latest.name}」。` }]);
     } catch (error) {
       notify((error as Error).message);
+    } finally {
+      switchProjectRef.current = false;
+    }
+  }
+
+  function rememberAsset(asset: Asset) {
+    setRecentAssets(items => [asset, ...items.filter(item => item.url !== asset.url)]);
+    setAssetRefresh(value => value + 1);
+  }
+
+  async function placeAsset(asset: Asset, target = { projectId: projectRef.current.id, sceneId: current.scene.id, nodeId: selectedId, frame }) {
+    const writable = () => projectRef.current.id === target.projectId && !interactionRef.current.observerMode && !interactionRef.current.busy;
+    if (!writable()) {
+      notify("素材已保存在素材库；人工接管后可以放入镜头。");
       return;
     }
-    setPlaying(false);
-    revisionRef.current = value.revision;
-    savedContentRef.current.set(value.id, contentKey(value));
-    projectRef.current = clone(value);
-    setProject(projectRef.current);
-    setFrame(0);
-    setSelectedId(undefined);
-    setPast([]);
-    setFuture([]);
-    setTab("scenes");
-    setMessages([{ role: "assistant", text: `已打开「${value.name}」。` }]);
+    if (assetKind(asset) === "audio") {
+      const durationSeconds = asset.durationSeconds && Number.isFinite(asset.durationSeconds) && asset.durationSeconds > 0
+        ? asset.durationSeconds : await readAudioDuration(asset.url);
+      if (!writable()) {
+        notify("素材已保留，工程或操作模式已变化，未添加到时间线。");
+        return;
+      }
+      const latest = projectRef.current;
+      const duration = Math.max(1, Math.ceil(durationSeconds * latest.fps));
+      const start = Math.max(0, Math.min(target.frame, totalFrames(latest) - 1));
+      const usable = Math.min(duration, totalFrames(latest) - start);
+      const id = uid();
+      const changed = edit(draft => draft.audio.push({
+        id, name: asset.name, src: asset.url, start, trimStart: 0,
+        duration: usable, sourceDuration: duration, volume: 0.8,
+      }));
+      if (changed) {
+        setSelectedId(undefined);
+        setSelectedAudioId(id);
+        setPanel("properties");
+        notify(duration > usable ? "音频已加入，超出工程的部分已裁剪。" : "音频已加入时间线");
+      }
+      return;
+    }
+    const latest = projectRef.current;
+    const scene = latest.scenes.find(item => item.id === target.sceneId);
+    if (!scene) throw new Error("目标镜头已变更，请重新选择镜头后添加素材。");
+    const selectedImage = scene.nodes.find(node => node.id === target.nodeId && node.type === "image");
+    if (selectedImage?.locked) throw new Error("请先解锁选中的图片，或取消选择后新增图片。");
+    if (selectedImage) {
+      const changed = edit(draft => {
+        const node = draft.scenes.find(item => item.id === target.sceneId)?.nodes.find(item => item.id === selectedImage.id);
+        if (!node) return;
+        node.src = asset.url;
+        node.name = asset.name;
+        node.protected = [...new Set([...(node.protected || []), "src", "name"])];
+      });
+      if (changed) notify("选中的图片已替换");
+      return;
+    }
+    const ratio = asset.width && asset.height ? asset.width / asset.height : 16 / 9;
+    const width = Math.min(latest.width * 0.72, latest.height * 0.66 * ratio);
+    const height = width / ratio;
+    const node = createNode("image", scene.duration, {
+      src: asset.url, name: asset.name, objectFit: "contain", width, height,
+      x: (latest.width - width) / 2, y: (latest.height - height) / 2,
+    });
+    const changed = edit(draft => draft.scenes.find(item => item.id === target.sceneId)?.nodes.push(node));
+    if (changed) {
+      setSelectedId(node.id);
+      setSelectedAudioId(undefined);
+      setPanel("properties");
+      notify("图片已添加到镜头");
+    }
+  }
+
+  async function useAsset(asset: Asset) {
+    if (assetOperationRef.current || switchProjectRef.current) return;
+    assetOperationRef.current = true;
+    setAssetBusy(true);
+    try {
+      await placeAsset(asset);
+    } catch (error) {
+      notify((error as Error).message);
+    } finally {
+      assetOperationRef.current = false;
+      setAssetBusy(false);
+    }
   }
 
   async function upload(file: File) {
-    const targetProjectId = projectRef.current.id;
+    if (assetOperationRef.current || switchProjectRef.current) return;
+    if (!file.size || file.size > 30 * 1024 * 1024) {
+      notify("请选择 1 字节至 30 MB 的图片或音频文件。");
+      return;
+    }
+    const target = { projectId: projectRef.current.id, sceneId: current.scene.id, nodeId: selectedId, frame };
+    const shouldPlace = !interactionRef.current.observerMode && !interactionRef.current.busy;
+    assetOperationRef.current = true;
     setAssetBusy(true);
     try {
       const form = new FormData();
       form.append("file", file);
-      const value = await api<{ url: string; name: string; type: string }>(
-        "/api/uploads",
-        { method: "POST", body: form },
-      );
-      if (projectRef.current.id !== targetProjectId) {
-        notify("素材已上传，当前工程已切换，未自动添加。");
-        return;
+      const result = await api<Asset>("/api/uploads", { method: "POST", body: form });
+      let dimensions: { width?: number; height?: number } = {};
+      if (assetKind(result) === "image") {
+        try {
+          const bitmap = await createImageBitmap(file);
+          dimensions = { width: bitmap.width, height: bitmap.height };
+          bitmap.close();
+        } catch {}
       }
-      setUploadAssets((items) => [...items, value]);
-      if (value.type.startsWith("audio")) {
-        const duration = await new Promise<number>((resolve, reject) => {
-          const audio = new Audio(value.url);
-          audio.onloadedmetadata = () => resolve(audio.duration * project.fps);
-          audio.onerror = () => reject(new Error("音频无法读取"));
-        });
-        edit((draft) =>
-          draft.audio.push({
-            id: uid(),
-            name: value.name,
-            src: value.url,
-            start: 0,
-            trimStart: 0,
-            duration: Math.min(Math.floor(duration), frameCount),
-            sourceDuration: Math.floor(duration),
-            volume: 0.8,
-          }),
-        );
-        notify("音频已添加至时间线");
-      } else if (selected?.type === "image") {
-        updateNode({ src: value.url, name: value.name });
-        notify("图片已替换");
-      } else
-        addNode("image", {
-          src: value.url,
-          name: value.name,
-          width: project.width * 0.55,
-          height: project.height * 0.55,
-        });
+      const value = { ...result, ...dimensions, id: result.id || result.url, size: file.size, source: "upload" };
+      rememberAsset(value);
+      if (shouldPlace) await placeAsset(value, target);
+      else notify("素材已上传到素材库，AI 可以使用。人工接管后可手动放入镜头。");
     } catch (error) {
       notify((error as Error).message);
     } finally {
+      assetOperationRef.current = false;
       setAssetBusy(false);
     }
   }
 
   async function generateImage() {
-    if (!imagePrompt.trim() || assetBusy) return;
-    const targetProjectId = projectRef.current.id;
+    if (!imagePrompt.trim() || assetOperationRef.current || switchProjectRef.current || interactionRef.current.observerMode || interactionRef.current.busy) return;
+    const target = { projectId: projectRef.current.id, sceneId: current.scene.id, nodeId: selectedId, frame };
+    assetOperationRef.current = true;
     setAssetBusy(true);
     try {
-      const result = await api<{ url: string; name?: string }>(
-        "/api/images/generate",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            prompt: imagePrompt,
-            width: 1024,
-            height: 1024,
-          }),
-        },
-      );
-      if (projectRef.current.id !== targetProjectId) {
-        notify("图片已生成，当前工程已切换，未自动添加。");
-        return;
-      }
-      setUploadAssets((items) => [
-        ...items,
-        { url: result.url, name: result.name || "生成图片", type: "image/png" },
-      ]);
-      addNode("image", {
-        src: result.url,
-        name: "生成图片",
-        width: project.height * 0.6,
-        height: project.height * 0.6,
+      const result = await api<Asset>("/api/images/generate", {
+        method: "POST",
+        body: JSON.stringify({ prompt: imagePrompt.trim(), width: 1024, height: 1024 }),
       });
-      notify("图片已生成并添加");
+      const asset = { ...result, id: result.id || result.url, name: result.name || "生成图片", type: result.type || "image", source: "generated", width: result.width || 1024, height: result.height || 1024 };
+      rememberAsset(asset);
+      await placeAsset(asset, target);
     } catch (error) {
       notify((error as Error).message);
     } finally {
+      assetOperationRef.current = false;
       setAssetBusy(false);
     }
   }
@@ -839,7 +989,7 @@ export default function App() {
       if (modal) return;
       if (
         (event.target as HTMLElement)?.closest(
-          'input,textarea,select,[contenteditable="true"]',
+          'input,textarea,select,button,a,[role="dialog"],[contenteditable="true"]',
         )
       )
         return;
@@ -858,8 +1008,10 @@ export default function App() {
   }, [modal]);
 
   async function importProject(file: File) {
+    if (switchProjectRef.current) return;
+    switchProjectRef.current = true;
     try {
-      if (assetBusy || busy)
+      if (assetOperationRef.current || interactionRef.current.busy)
         throw new Error("请先停止或等待当前生成任务完成，再导入工程。");
       await saveBeforeSwitch();
       if (file.name.toLowerCase().endsWith(".zip")) {
@@ -870,6 +1022,11 @@ export default function App() {
           body: form,
         });
         setProjects((items) => [saved, ...items]);
+        switchProjectRef.current = false;
+        if (interactionRef.current.busy) {
+          notify("工程与素材已导入；AI 任务正在运行，暂未切换。");
+          return;
+        }
         await openProject(saved);
         notify("工程与素材已导入");
         return;
@@ -883,10 +1040,17 @@ export default function App() {
         body: JSON.stringify(value),
       });
       setProjects((items) => [saved, ...items]);
+      switchProjectRef.current = false;
+      if (interactionRef.current.busy) {
+        notify("工程已导入；AI 任务正在运行，暂未切换。");
+        return;
+      }
       await openProject(saved);
       notify("工程已导入");
     } catch (error) {
       notify(`导入失败：${(error as Error).message}`);
+    } finally {
+      switchProjectRef.current = false;
     }
   }
 
@@ -945,7 +1109,7 @@ export default function App() {
               })
             }
           />
-          <ChevronDown size={14} />
+          <ProjectSwitcher currentId={project.id} projects={projects} disabled={busy || assetBusy} onProjects={setProjects} onSelect={openProject} onNew={() => setModal("new")} onImport={() => importRef.current?.click()} />
           <span
             className={`save-state ${saveStatus.includes("失败") ? "error" : ""}`}
           >
@@ -1026,31 +1190,32 @@ export default function App() {
                       ? "当前镜头图层"
                       : "我的项目"}
             </h2>
-            <span className="count">
+            {tab !== "text" && <span className="count">
               {tab === "scenes"
                 ? project.scenes.length
                 : tab === "layers"
                   ? current.scene.nodes.length
-                  : ""}
-            </span>
+                  : tab === "assets" ? assets.length : projects.length}
+            </span>}
             <IconButton
-              label={tab === "scenes" ? "添加镜头" : "新建工程"}
-              disabled={busy || (tab === "scenes" && observerMode)}
+              label={tab === "scenes" ? "添加镜头" : tab === "assets" ? "上传素材" : "新建工程"}
+              disabled={busy || assetBusy || (tab === "scenes" && observerMode)}
               onClick={() => {
                 if (tab === "scenes") {
                   edit((d) => d.scenes.push(blankScene()));
-                } else setModal("new");
+                } else if (tab === "assets") uploadRef.current?.click();
+                else setModal("new");
               }}
             >
               <Plus size={17} />
             </IconButton>
           </div>
-          <div className="library-content">
+          <div className={`library-content ${tab === "assets" ? "asset-library-content" : ""}`}>
             {tab === "scenes" && (
               <>
                 <div className="section-caption">
                   {project.width} × {project.height}
-                  <span>{seconds(frameCount)} 秒</span>
+                  <span>{seconds(frameCount, project.fps)} 秒</span>
                 </div>
                 <div className="scene-list">
                   {project.scenes.map((scene, index) => (
@@ -1083,7 +1248,7 @@ export default function App() {
                           {String(index + 1).padStart(2, "0")}
                         </span>
                         <span className="scene-duration">
-                          {seconds(scene.duration)}s
+                          {seconds(scene.duration, project.fps)}s
                         </span>
                       </div>
                       <div className="scene-caption">
@@ -1111,7 +1276,7 @@ export default function App() {
                 <button
                   className="button upload-button"
                   onClick={() => uploadRef.current?.click()}
-                  disabled={assetBusy}
+                  disabled={assetBusy || busy}
                 >
                   {assetBusy ? (
                     <Loader2 className="spin" size={17} />
@@ -1128,34 +1293,15 @@ export default function App() {
                   <AudioLines size={16} />
                   生成旁白
                 </button>
-                <div className="asset-grid">
-                  {[
-                    {
-                      url: "/media/landscape.jpg",
-                      name: "山野日落",
-                      type: "image/jpeg",
-                    },
-                    ...uploadAssets,
-                  ]
-                    .filter((a) => a.type.startsWith("image"))
-                    .map((asset, index) => (
-                      <button
-                        key={index}
-                        className="asset-item"
-                        disabled={observerMode || busy}
-                        onClick={() =>
-                          addNode("image", {
-                            src: asset.url,
-                            name: asset.name,
-                            height: project.height * 0.55,
-                          })
-                        }
-                      >
-                        <img src={asset.url} alt={asset.name} />
-                        <span>{asset.name}</span>
-                      </button>
-                    ))}
-                </div>
+                <AssetLibrary
+                  assets={assets}
+                  loading={assetsLoading}
+                  error={assetsError}
+                  disabled={observerMode || busy || assetBusy}
+                  usedURLs={usedAssetURLs}
+                  onRefresh={() => void refreshAssets()}
+                  onUse={asset => void useAsset(asset)}
+                />
                 <div className="subsection-title">
                   <Sparkles size={15} />
                   生成图片
@@ -1331,7 +1477,7 @@ export default function App() {
                           <strong>{item.name}</strong>
                           <small>
                             {item.scenes.length} 个镜头 ·{" "}
-                            {seconds(totalFrames(item))} 秒
+                            {seconds(totalFrames(item), item.fps)} 秒
                           </small>
                         </span>
                       </button>
@@ -1471,8 +1617,8 @@ export default function App() {
                 <ChevronRight size={17} />
               </IconButton>
               <span className="timecode">
-                {clock(frame)}
-                <span>/ {clock(frameCount)}</span>
+                {clock(frame, project.fps)}
+                <span>/ {clock(frameCount, project.fps)}</span>
               </span>
             </div>
             <div className="toolbar-group">
@@ -1538,7 +1684,7 @@ export default function App() {
             </button>
           </div>
           <div className="studio-container" style={{ display: panel === "agent" ? "flex" : "none", flex: 1, minHeight: 0 }}>
-            <StudioPanel projectId={project.id} loaded={loaded} onEvent={receiveStudioEvent} onBusy={setBusy} beforeStart={saveBeforeSwitch} onSettings={() => setModal("settings")} />
+            <StudioPanel projectId={project.id} loaded={loaded} onEvent={receiveStudioEvent} onBusy={setBusy} beforeStart={beforeAgentStart} onSettings={() => setModal("settings")} />
           </div>
           {panel === "properties" && (
             <div className={`properties-panel ${observerMode || busy ? "readonly" : ""}`}>

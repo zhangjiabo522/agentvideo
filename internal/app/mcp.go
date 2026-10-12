@@ -80,6 +80,9 @@ func (s *Server) studioToolDefinitions() []map[string]any {
 	add := func(name, description string, parameters map[string]any) {
 		definitions = append(definitions, map[string]any{"type": "function", "function": map[string]any{"name": name, "description": description, "parameters": parameters}})
 	}
+	add("video_assets_list", "列出真实图片与音频素材，返回可直接用于图层和音轨的url、名称、尺寸、时长与引用工程。制作视频前先查询，禁止编造素材地址。不会包含临时文件或工程预览截图。", studioObject(map[string]any{
+		"projectId": id(), "query": studioSchema("string", "可省略，按素材名称搜索"), "type": studioEnum("可省略，筛选素材类型", "image", "audio"), "source": studioEnum("可省略，筛选来源", "upload", "generated", "speech", "imported", "existing", "builtin"),
+	}))
 	add("video_project_list", "列出已保存的视频工程及其结构。密钥不会返回。", studioObject(map[string]any{}))
 	add("video_project_get", "读取工程最新完整结构、所有镜头图层音轨与revision。剪辑前先读，所有时间以整数帧计，镜头连续拼接，图层时间相对镜头，音轨相对视频。", studioObject(map[string]any{"projectId": id()}, "projectId"))
 	add("video_project_create", "新建视频工程，默认1280×720、30fps、5秒空镜头。可直接提供完整project。", studioObject(map[string]any{

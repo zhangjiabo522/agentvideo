@@ -27,6 +27,8 @@ type Server struct {
 	previewOnly  bool
 	publicVideos []PublicVideo
 	publicFiles  map[string]string
+	assetMu      sync.Mutex
+	assetRecords map[string]assetRecord
 }
 
 func NewServer(dataDir, distDir string) (*Server, error) {
@@ -46,6 +48,9 @@ func NewServer(dataDir, distDir string) (*Server, error) {
 		return nil, fmt.Errorf("模型设置文件无法读取: %w", err)
 	}
 	s.settings = settingsDefaults(s.settings)
+	if err := s.loadAssetCatalog(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -69,13 +74,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agent", s.agent)
 	mux.HandleFunc("POST /api/images/generate", s.generateImage)
 	mux.HandleFunc("POST /api/uploads", s.upload)
+	mux.HandleFunc("GET /api/assets", s.listAssets)
 	mux.HandleFunc("POST /api/bundle", s.postBundle)
 	mux.HandleFunc("POST /api/projects/import", s.importBundle)
 	mux.HandleFunc("GET /api/projects/{id}/bundle", s.getBundle)
 	s.registerRenderRoutes(mux)
 	s.registerStudioRoutes(mux)
 	s.registerAgentRunRoutes(mux)
-	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(filepath.Join(s.dataDir, "uploads")))))
+	mux.HandleFunc("GET /uploads/", s.serveAsset)
 	mux.Handle("GET /exports/", http.StripPrefix("/exports/", http.FileServer(http.Dir(filepath.Join(s.dataDir, "exports")))))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { errorJSON(w, 404, "接口不存在") })
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

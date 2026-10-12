@@ -73,6 +73,8 @@ func (s *Server) executeStudioTool(ctx context.Context, name string, args json.R
 		return nil, errors.New("操作已取消")
 	}
 	switch name {
+	case "video_assets_list":
+		return s.studioAssets(ctx, args)
 	case "video_project_list":
 		var input struct{}
 		if err := studioDecode(args, &input); err != nil {
@@ -713,12 +715,12 @@ func (s *Server) studioScreenshot(ctx context.Context, project Project, frame in
 	if _, _, err := assetFormat(data, true); err != nil {
 		return nil, errors.New("截图格式无效")
 	}
-	assetURL, err := s.saveAsset(data, ".png")
+	asset, err := s.saveAssetWithMetadata(ctx, data, ".png", assetOptions{Name: "工程预览截图", Source: "preview"})
 	if err != nil {
 		return nil, errors.New("截图保存失败")
 	}
-	absPath, _ := filepath.Abs(filepath.Join(s.dataDir, strings.TrimPrefix(assetURL, "/")))
-	return map[string]any{"url": assetURL, "path": absPath, "mimeType": "image/png", "width": project.Width, "height": project.Height}, nil
+	absPath, _ := filepath.Abs(filepath.Join(s.dataDir, strings.TrimPrefix(asset.URL, "/")))
+	return map[string]any{"url": asset.URL, "path": absPath, "mimeType": "image/png", "width": project.Width, "height": project.Height}, nil
 }
 
 func (s *Server) registerStudioRoutes(mux *http.ServeMux) {

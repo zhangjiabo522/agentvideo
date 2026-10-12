@@ -33,6 +33,7 @@ const toolLabels: Record<string, string> = {
   video_project_get: "查看工程",
   video_project_list: "查找工程",
   video_project_create: "创建工程",
+  video_assets_list: "查找真实素材",
   video_edit: "编辑时间线",
   video_undo: "撤销操作",
   video_speech_generate: "生成并放置旁白",
@@ -64,16 +65,30 @@ export function StudioPanel({ projectId, loaded, onEvent, onBusy, beforeStart, o
   const [exportRefresh, setExportRefresh] = useState(0);
   const callbacks = useRef({ onEvent, onBusy, beforeStart });
   callbacks.current = { onEvent, onBusy, beforeStart };
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!loaded) return;
     let cancelled = false;
+    const controller = new AbortController();
+    setConnection("连接中");
     setEvents([]);
     setRun(undefined);
+    setStarting(false);
     setError("");
     setExportJob(undefined);
     setExportJobId(undefined);
     setExportConnectionError("");
+    const acceptRun = (value: StudioRun) => {
+      if (cancelled || value.projectId !== projectId) return;
+      setRun(previous => {
+        if (!previous || previous.projectId !== projectId) return value;
+        if (Date.parse(value.updatedAt) < Date.parse(previous.updatedAt)) return previous;
+        if (previous.id === value.id && !isActive(previous) && isActive(value)) return previous;
+        return value;
+      });
+    };
     const receive = (event: StudioEvent) => {
       if (cancelled || event.projectId !== projectId) return;
       callbacks.current.onEvent(event);
@@ -82,7 +97,7 @@ export function StudioPanel({ projectId, loaded, onEvent, onBusy, beforeStart, o
       }
       if (event.type === "run" && event.data) {
         const value = (event.data.run || event.data) as unknown as StudioRun;
-        if (value.id && value.status) setRun(value);
+        if (value.id && value.status) acceptRun(value);
       }
       if (event.type === "export.started" && typeof event.data?.id === "string") {
         setExportJobId(event.data.id);
@@ -94,23 +109,30 @@ export function StudioPanel({ projectId, loaded, onEvent, onBusy, beforeStart, o
     stream.onmessage = message => {
       try { receive(JSON.parse(message.data)); } catch { setError("无法读取实时更新，请刷新页面。"); }
     };
-    api<{ events: StudioEvent[] }>(`/api/projects/${projectId}/activity`).then(value => {
+    api<{ events: StudioEvent[] }>(`/api/projects/${projectId}/activity`, {signal: controller.signal}).then(value => {
       const lastExport = [...value.events].reverse().find(item => item.type === "export.started");
-      if (!cancelled && typeof lastExport?.data?.id === "string") setExportJobId(lastExport.data.id);
+      if (!cancelled && typeof lastExport?.data?.id === "string") setExportJobId(previous => previous || lastExport.data!.id as string);
       if (!cancelled) setEvents(items => {
         const merged = new Map([...value.events, ...items].filter(item => item.type !== "snapshot" && item.message).map(item => [item.seq, item]));
         return Array.from(merged.values()).sort((a, b) => a.seq - b.seq).slice(-100);
       });
     }).catch(() => {});
-    const refreshRuns = () => api<{ runs: StudioRun[] }>(`/api/projects/${projectId}/runs`).then(value => {
-      if (!cancelled && value.runs.length) setRun(value.runs[0]);
-    }).catch(() => {});
+    let timer = 0;
+    const refreshRuns = async () => {
+      try {
+        const value = await api<{ runs: StudioRun[] }>(`/api/projects/${projectId}/runs`, {signal: controller.signal});
+        if (value.runs.length) acceptRun(value.runs[0]);
+      } catch {}
+      finally {
+        if (!cancelled) timer = window.setTimeout(refreshRuns, 2000);
+      }
+    };
     void refreshRuns();
-    const timer = window.setInterval(refreshRuns, 2000);
     return () => {
       cancelled = true;
+      controller.abort();
       stream.close();
-      clearInterval(timer);
+      window.clearTimeout(timer);
       callbacks.current.onBusy(false);
     };
   }, [projectId, loaded]);
@@ -159,20 +181,22 @@ export function StudioPanel({ projectId, loaded, onEvent, onBusy, beforeStart, o
     setExportConnectionError("");
     try {
       await callbacks.current.beforeStart();
+      if (projectIdRef.current !== projectId) return;
       const value = await api<{ run: StudioRun }>("/api/agent/runs", {
         method: "POST", body: JSON.stringify({ projectId, prompt }),
       });
+      if (projectIdRef.current !== projectId) return;
       setRun(value.run);
       setPrompt("");
-    } catch (cause) { setError((cause as Error).message); }
-    finally { setStarting(false); }
+    } catch (cause) { if (projectIdRef.current === projectId) setError((cause as Error).message); }
+    finally { if (projectIdRef.current === projectId) setStarting(false); }
   };
   const cancel = async () => {
     if (!run) return;
     try {
       const value = await api<{ run: StudioRun }>(`/api/agent/runs/${run.id}/cancel`, { method: "POST" });
-      setRun(value.run);
-    } catch (cause) { setError((cause as Error).message); }
+      if (projectIdRef.current === projectId) setRun(value.run);
+    } catch (cause) { if (projectIdRef.current === projectId) setError((cause as Error).message); }
   };
   const config = JSON.stringify({ mcpServers: { yingxu: { url: `${location.origin}/mcp` } } }, null, 2);
   return <div className="studio-panel">
